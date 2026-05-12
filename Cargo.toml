@@ -2,10 +2,11 @@
 name = "junkyard"
 description = "Cross-platform system trash API."
 version = "0.0.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/errmayank/junkyard"
 readme = "README.md"
 categories = ["filesystem", "os"]
 keywords = ["trash", "recycle", "bin"]
 edition = "2024"
 rust-version = "1.85.0"
-include = ["/Cargo.toml", "/README.md", "/src/**"]
+include = ["/Cargo.toml", "/LICENSE*", "/README.md", "/src/**"]
