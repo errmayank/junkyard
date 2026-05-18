@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+"${CARGO:-cargo}" clippy "$@" --release --all-targets --all-features -- --deny warnings
