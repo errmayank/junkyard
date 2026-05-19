@@ -1,0 +1,61 @@
+name: "Run Tests"
+
+on:
+  pull_request:
+    branches:
+      - "**"
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name == 'main' && github.sha || github.head_ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  run_tests:
+    name: "Test ${{ matrix.target.name }} / Rust ${{ matrix.rust }}"
+    if: github.repository == 'errmayank/junkyard'
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - stable
+          - 1.85.0
+        target:
+          - name: "Linux"
+            os: ubuntu-24.04
+          - name: "macOS"
+            os: macos-26
+          - name: "Windows"
+            os: windows-2025
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: "Install Rust"
+        run: rustup toolchain install ${{ matrix.rust }} --profile minimal
+
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-bin: false
+          cache-targets: false
+
+      - name: "Install Nextest"
+        uses: taiki-e/install-action@65851e10cd6c377f11a60e600abc07cb08643468 # v2.79.3
+        with:
+          tool: nextest
+
+      - name: "Run tests"
+        run: cargo +${{ matrix.rust }} nextest run --all-targets --all-features --no-fail-fast
