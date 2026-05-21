@@ -72,6 +72,32 @@ fn test_discard_file_with_parent_symlink() {
 }
 
 #[test]
+fn test_discard_broken_symlink() {
+    let temp_dir = TempDir::new().unwrap();
+    let trash = Trash::new();
+    let missing_target = temp_dir.path().join("missing.txt");
+    let file_link = temp_dir.path().join("file-link.txt");
+
+    unix::fs::symlink(&missing_target, &file_link).unwrap();
+
+    let trashed_item = trash.discard(&file_link).unwrap();
+
+    assert_eq!(trashed_item.name(), file_link.file_name().unwrap());
+    assert_eq!(
+        trashed_item.original_path(),
+        temp_dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("file-link.txt")
+    );
+    let error = std::fs::symlink_metadata(&file_link).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(!missing_target.exists());
+}
+
+#[test]
 fn test_discard_directory() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
