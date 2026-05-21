@@ -46,6 +46,30 @@ fn test_discard_file_name_with_special_chars() {
 }
 
 #[test]
+fn test_discard_files_with_same_name() {
+    let temp_dir = TempDir::new().unwrap();
+    let trash = Trash::new();
+    let first_dir = temp_dir.path().join("first");
+    let second_dir = temp_dir.path().join("second");
+    let first = first_dir.join("file.txt");
+    let second = second_dir.join("file.txt");
+
+    std::fs::create_dir(&first_dir).unwrap();
+    std::fs::create_dir(&second_dir).unwrap();
+    std::fs::write(&first, b"first").unwrap();
+    std::fs::write(&second, b"second").unwrap();
+
+    let first_item = trash.discard(&first).unwrap();
+    let second_item = trash.discard(&second).unwrap();
+
+    assert_eq!(first_item.name(), first.file_name().unwrap());
+    assert_eq!(second_item.name(), second.file_name().unwrap());
+    assert_ne!(first_item.id(), second_item.id());
+    assert!(!first.exists());
+    assert!(!second.exists());
+}
+
+#[test]
 fn test_discard_file_with_parent_symlink() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
