@@ -1,5 +1,7 @@
 mod error;
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod util;
@@ -81,9 +83,7 @@ impl TrashItem {
         self.original_parent.join(&self.name)
     }
 
-    /// Returns when the item was moved to the trash.
-    ///
-    /// On macOS, this is recorded immediately after `NSFileManager` reports success.
+    /// Returns the time at which the item was trashed.
     #[must_use]
     pub fn discarded_at(&self) -> SystemTime {
         self.discarded_at
@@ -114,12 +114,17 @@ impl Trash {
     {
         let path = util::resolve_path(path.as_ref())?;
 
+        #[cfg(target_os = "linux")]
+        {
+            linux::discard(self, &path)
+        }
+
         #[cfg(target_os = "macos")]
         {
             macos::discard(self, &path)
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(target_os = "windows")]
         {
             std::mem::drop(path);
             unimplemented!()
@@ -149,12 +154,17 @@ impl Trash {
             .map(|path| util::resolve_path(path.as_ref()))
             .collect::<Result<Vec<_>>>()?;
 
+        #[cfg(target_os = "linux")]
+        {
+            linux::discard_all(self, &paths)
+        }
+
         #[cfg(target_os = "macos")]
         {
             macos::discard_all(self, &paths)
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(target_os = "windows")]
         {
             std::mem::drop(paths);
             unimplemented!()
