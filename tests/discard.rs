@@ -73,18 +73,18 @@ fn test_discard_files_with_same_name() {
 fn test_discard_file_with_parent_symlink() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
-    let directory = temp_dir.path().join("directory");
-    let directory_link = temp_dir.path().join("directory-link");
+    let dir = temp_dir.path().join("directory");
+    let dir_link = temp_dir.path().join("directory-link");
     let file = temp_dir.path().join("file.txt");
-    let file_link = directory.join("file-link.txt");
+    let file_link = dir.join("file-link.txt");
 
-    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&dir).unwrap();
     std::fs::write(&file, b"content").unwrap();
-    unix::fs::symlink(&directory, &directory_link).unwrap();
+    unix::fs::symlink(&dir, &dir_link).unwrap();
     unix::fs::symlink(&file, &file_link).unwrap();
 
-    let expected_parent = directory.canonicalize().unwrap();
-    let trashed_item = trash.discard(directory_link.join("file-link.txt")).unwrap();
+    let expected_parent = dir.canonicalize().unwrap();
+    let trashed_item = trash.discard(dir_link.join("file-link.txt")).unwrap();
 
     assert_eq!(trashed_item.original_parent(), expected_parent);
     assert_eq!(
@@ -125,20 +125,20 @@ fn test_discard_broken_symlink() {
 fn test_discard_directory() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
-    let directory = temp_dir.path().join("directory");
-    let file = directory.join("file.txt");
+    let dir = temp_dir.path().join("directory");
+    let file = dir.join("file.txt");
 
-    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&dir).unwrap();
     std::fs::write(file, b"junk").unwrap();
 
-    let trashed_item = trash.discard(&directory).unwrap();
+    let trashed_item = trash.discard(&dir).unwrap();
 
-    assert_eq!(trashed_item.name(), directory.file_name().unwrap());
+    assert_eq!(trashed_item.name(), dir.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
         temp_dir.path().canonicalize().unwrap().join("directory")
     );
-    assert!(!directory.exists());
+    assert!(!dir.exists());
 }
 
 #[test]
@@ -148,22 +148,22 @@ fn test_discard_all() {
     let first = temp_dir.path().join("first.txt");
     let second = temp_dir.path().join("second.txt");
     let third = temp_dir.path().join("third.txt");
-    let directory = temp_dir.path().join("directory");
-    let fourth = directory.join("fourth.txt");
+    let dir = temp_dir.path().join("directory");
+    let fourth = dir.join("fourth.txt");
 
     std::fs::write(&first, b"first").unwrap();
     std::fs::write(&second, b"second").unwrap();
     std::fs::write(&third, b"third").unwrap();
-    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&dir).unwrap();
     std::fs::write(&fourth, b"fourth").unwrap();
 
-    let trashed_items = trash.discard_all([&first, &second, &directory]).unwrap();
+    let trashed_items = trash.discard_all([&first, &second, &dir]).unwrap();
 
     assert_eq!(trashed_items.len(), 3);
     assert!(!first.exists());
     assert!(!second.exists());
     assert!(third.exists());
-    assert!(!directory.exists());
+    assert!(!dir.exists());
 }
 
 #[test]
