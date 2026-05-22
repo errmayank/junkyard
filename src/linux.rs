@@ -1,5 +1,7 @@
 use std::{
-    ffi::OsString,
+    env,
+    ffi::{OsStr, OsString},
+    io,
     os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
@@ -85,9 +87,98 @@ enum TrashLocation {
         mount_point: MountPoint,
     },
     External {
-        path: PathBuf,
         mount_point: MountPoint,
     },
+}
+
+impl TrashLocation {
+    fn resolve(path: &Path) -> Result<Self> {
+        let mounts = Mounts::read()?;
+        let xdg_data_home = env::var_os("XDG_DATA_HOME");
+        let home = env::var_os("HOME");
+        let home_trash = home_trash_path(xdg_data_home.as_deref(), home.as_deref())?;
+        let home_trash = canonicalize_nearest_existing_parent(&home_trash)?;
+
+        Self::select(path, &mounts, &home_trash)
+    }
+
+    fn select(path: &Path, mounts: &Mounts, home_trash: &Path) -> Result<Self> {
+        let target_mount = mounts
+            .find_mount_point(path)
+            .ok_or_else(|| Error::Platform {
+                message: format!("No mount point found for {}", path.display()),
+            })?;
+        let home_mount = mounts
+            .find_mount_point(home_trash)
+            .ok_or_else(|| Error::Platform {
+                message: format!("No mount point found for {}", home_trash.display()),
+            })?;
+
+        if target_mount == home_mount {
+            return Ok(Self::Home {
+                path: home_trash.to_path_buf(),
+                mount_point: target_mount,
+            });
+        }
+
+        Ok(Self::External {
+            mount_point: target_mount,
+        })
+    }
+}
+
+fn home_trash_path(xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> Result<PathBuf> {
+    if let Some(xdg_data_home) = xdg_data_home
+        && !xdg_data_home.is_empty()
+    {
+        let xdg_data_home = Path::new(xdg_data_home);
+
+        if xdg_data_home.is_absolute() {
+            return Ok(xdg_data_home.join("Trash"));
+        }
+    }
+
+    if let Some(home) = home
+        && !home.is_empty()
+    {
+        let home = Path::new(home);
+
+        if home.is_absolute() {
+            return Ok(home.join(".local/share/Trash"));
+        }
+    }
+
+    Err(Error::Platform {
+        message: "No absolute XDG_DATA_HOME or HOME is available".to_owned(),
+    })
+}
+
+fn canonicalize_nearest_existing_parent(path: &Path) -> Result<PathBuf> {
+    for ancestor in path.ancestors() {
+        match ancestor.canonicalize() {
+            Ok(mut canonical) => {
+                let suffix = path
+                    .strip_prefix(ancestor)
+                    .map_err(|source| Error::Platform {
+                        message: format!("Failed to resolve {}: {source}", path.display()),
+                    })?;
+
+                canonical.push(suffix);
+                return Ok(canonical);
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    path: ancestor.to_path_buf(),
+                    source,
+                });
+            }
+        }
+    }
+
+    Err(Error::Platform {
+        message: format!("Path has no existing parent: {}", path.display()),
+    })
 }
 
 fn parse_mount_info(contents: &[u8]) -> std::result::Result<Vec<MountInfo>, MountParseError> {
@@ -177,6 +268,8 @@ fn decode_mount_info_path(path: &[u8]) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    use std::os::unix;
+
     #[test]
     fn test_parse_mount_info() {
         let bytes = concat!(
@@ -257,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_mount_point_requires_component_boundary() {
+    fn test_find_mount_point_does_not_match_partial_component() {
         let mounts = Mounts::new(vec![
             MountInfo {
                 mount_point: MountPoint(PathBuf::from("/")),
@@ -272,5 +365,97 @@ mod tests {
             .unwrap();
 
         assert_eq!(mount_point.as_path(), Path::new("/"));
+    }
+
+    #[test]
+    fn test_home_trash_path() {
+        for (xdg_data_home, home, expected) in [
+            (
+                Some(OsStr::new("/home/user/.local/share")),
+                Some(OsStr::new("/home/user")),
+                Path::new("/home/user/.local/share/Trash"),
+            ),
+            (
+                Some(OsStr::new(".local/share")),
+                Some(OsStr::new("/home/user")),
+                Path::new("/home/user/.local/share/Trash"),
+            ),
+            (
+                None,
+                Some(OsStr::new("/home/user")),
+                Path::new("/home/user/.local/share/Trash"),
+            ),
+        ] {
+            let path = home_trash_path(xdg_data_home, home).unwrap();
+
+            assert_eq!(path, expected);
+        }
+
+        for (xdg_data_home, home) in [(None, Some(OsStr::new("home/user"))), (None, None)] {
+            let error = home_trash_path(xdg_data_home, home).unwrap_err();
+
+            assert!(matches!(error, Error::Platform { .. }));
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_nearest_existing_parent() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let dir = temp_dir.path().join("directory");
+        let dir_link = temp_dir.path().join("directory-link");
+        let trash = dir_link.join(".local/share/Trash");
+
+        std::fs::create_dir(&dir).unwrap();
+        unix::fs::symlink(&dir, &dir_link).unwrap();
+
+        let canonical = canonicalize_nearest_existing_parent(&trash).unwrap();
+
+        assert_eq!(
+            canonical,
+            dir.canonicalize().unwrap().join(".local/share/Trash")
+        );
+    }
+
+    #[test]
+    fn test_select_trash_location() {
+        let mounts = Mounts::new(vec![
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/home")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/media/usb")),
+            },
+        ]);
+        let location = TrashLocation::select(
+            Path::new("/home/user/file.txt"),
+            &mounts,
+            Path::new("/home/user/.local/share/Trash"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            location,
+            TrashLocation::Home {
+                path: PathBuf::from("/home/user/.local/share/Trash"),
+                mount_point: MountPoint(PathBuf::from("/home")),
+            }
+        );
+
+        let location = TrashLocation::select(
+            Path::new("/media/usb/file.txt"),
+            &mounts,
+            Path::new("/home/user/.local/share/Trash"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            location,
+            TrashLocation::External {
+                mount_point: MountPoint(PathBuf::from("/media/usb")),
+            }
+        );
     }
 }
