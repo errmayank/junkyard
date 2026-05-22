@@ -236,4 +236,43 @@ mod tests {
 
         assert_eq!(error, MountParseError::InvalidPathEscape);
     }
+
+    #[test]
+    fn test_find_mount_point_uses_longest_match() {
+        let mounts = Mounts::new(vec![
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/foo")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/foo/bar")),
+            },
+        ]);
+
+        let mount_point = mounts
+            .find_mount_point(Path::new("/foo/bar/baz.txt"))
+            .unwrap();
+
+        assert_eq!(mount_point.as_path(), Path::new("/foo/bar"));
+    }
+
+    #[test]
+    fn test_find_mount_point_requires_component_boundary() {
+        let mounts = Mounts::new(vec![
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/foo/bar")),
+            },
+        ]);
+
+        let mount_point = mounts
+            .find_mount_point(Path::new("/foo/barista/file.txt"))
+            .unwrap();
+
+        assert_eq!(mount_point.as_path(), Path::new("/"));
+    }
 }
