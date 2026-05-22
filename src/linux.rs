@@ -26,14 +26,12 @@ impl Mounts {
             source,
         })?;
         let entries = parse_mount_info(&contents).map_err(|source| Error::Platform {
-            path: PathBuf::from(MOUNT_INFO_PATH),
-            message: format!("Failed to parse mount info: {source:?}"),
+            message: format!("Failed to parse {MOUNT_INFO_PATH}: {source:?}"),
         })?;
 
         if entries.is_empty() {
             return Err(Error::Platform {
-                path: PathBuf::from(MOUNT_INFO_PATH),
-                message: "No mount points found".to_owned(),
+                message: format!("No mount points found in {MOUNT_INFO_PATH}"),
             });
         }
 

@@ -38,8 +38,10 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
         .file_type();
     let Some(first_byte) = path_cstring.as_bytes_with_nul().first() else {
         return Err(Error::Platform {
-            path: path.to_path_buf(),
-            message: "Filesystem path representation was empty".to_owned(),
+            message: format!(
+                "Filesystem path representation was empty for {}",
+                path.display()
+            ),
         });
     };
     let path_ptr = NonNull::from(first_byte).cast::<c_char>();
@@ -59,13 +61,14 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
     file_manager
         .trashItemAtURL_resultingItemURL_error(&url, Some(&mut trashed_url))
         .map_err(|error| Error::Platform {
-            path: path.to_path_buf(),
-            message: error.to_string(),
+            message: format!("File manager rejected {}: {error}", path.display()),
         })?;
 
     let trashed_url = trashed_url.ok_or_else(|| Error::Platform {
-        path: path.to_path_buf(),
-        message: "Platform did not return a trashed item URL".to_owned(),
+        message: format!(
+            "File manager did not return a trashed item URL for {}",
+            path.display()
+        ),
     })?;
     let name = path
         .file_name()

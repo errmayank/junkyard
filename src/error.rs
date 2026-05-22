@@ -25,6 +25,6 @@ pub enum Error {
     },
 
     /// The platform rejected the trash operation.
-    #[error("Trash operation failed for {path}: {message}")]
-    Platform { path: PathBuf, message: String },
+    #[error("Trash operation failed: {message}")]
+    Platform { message: String },
 }
