@@ -1,18 +1,23 @@
+use indoc::formatdoc;
 use rustix::process;
 use std::{
     env,
     ffi::{OsStr, OsString},
-    io,
+    fs::OpenOptions,
+    io::{self, Write},
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
+        fs::{MetadataExt, PermissionsExt},
     },
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
+use time::OffsetDateTime;
 
 use crate::{Error, Result, Trash, TrashItem};
 
 const MOUNT_INFO_PATH: &str = "/proc/self/mountinfo";
+const OWNER_RWX_MODE: u32 = 0o700;
+const STICKY_BIT: u32 = 0o1000;
 
 pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
     unimplemented!()
@@ -92,6 +97,13 @@ struct TrashDirectory {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ReservedTrashEntry {
+    name: OsString,
+    file: PathBuf,
+    info: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ExternalTrashPath {
     path: PathBuf,
     fallback_path: Option<PathBuf>,
@@ -150,8 +162,48 @@ impl TrashLocation {
 
     fn prepare(&self) -> Result<TrashDirectory> {
         match self {
-            Self::Home { path, .. } => prepare_trash_directory(path),
+            Self::Home { path, .. } => prepare_home_trash_directory(path),
             Self::External { path, .. } => prepare_external_trash_directory(path),
+        }
+    }
+
+    fn trash_info_path(&self, path: &Path) -> Result<PathBuf> {
+        match self {
+            Self::Home { .. } => Ok(path.to_path_buf()),
+            Self::External { mount_point, .. } => {
+                let original_location =
+                    path.strip_prefix(mount_point.as_path())
+                        .map_err(|source| Error::Platform {
+                            message: format!(
+                                "Failed to make {} relative to {}: {source}",
+                                path.display(),
+                                mount_point.as_path().display()
+                            ),
+                        })?;
+
+                if original_location.as_os_str().is_empty() {
+                    return Err(Error::Platform {
+                        message: format!(
+                            "Trash info original location is empty for {}",
+                            path.display()
+                        ),
+                    });
+                }
+
+                if original_location
+                    .components()
+                    .any(|component| component == Component::ParentDir)
+                {
+                    return Err(Error::Platform {
+                        message: format!(
+                            "Trash info path must not contain '..': {}",
+                            original_location.display()
+                        ),
+                    });
+                }
+
+                Ok(original_location.to_path_buf())
+            }
         }
     }
 }
@@ -188,7 +240,7 @@ fn external_trash_path(top_dir: &Path, user_id: u32) -> ExternalTrashPath {
 
     if let Ok(metadata) = shared_trash.symlink_metadata() {
         let file_type = metadata.file_type();
-        let has_sticky_bit = metadata.mode() & 0o1000 != 0;
+        let has_sticky_bit = metadata.mode() & STICKY_BIT != 0;
 
         if file_type.is_dir() && !file_type.is_symlink() && has_sticky_bit {
             return ExternalTrashPath {
@@ -205,16 +257,16 @@ fn external_trash_path(top_dir: &Path, user_id: u32) -> ExternalTrashPath {
 }
 
 fn prepare_trash_directory(path: &Path) -> Result<TrashDirectory> {
-    let directory = TrashDirectory {
+    let trash_dir = TrashDirectory {
         path: path.to_owned(),
         files: path.join("files"),
         info: path.join("info"),
     };
 
     for path in [
-        directory.path.as_path(),
-        directory.files.as_path(),
-        directory.info.as_path(),
+        trash_dir.path.as_path(),
+        trash_dir.files.as_path(),
+        trash_dir.info.as_path(),
     ] {
         std::fs::create_dir_all(path).map_err(|source| Error::Io {
             path: path.to_owned(),
@@ -222,7 +274,108 @@ fn prepare_trash_directory(path: &Path) -> Result<TrashDirectory> {
         })?;
     }
 
-    Ok(directory)
+    Ok(trash_dir)
+}
+
+fn prepare_home_trash_directory(path: &Path) -> Result<TrashDirectory> {
+    let trash_dir = TrashDirectory {
+        path: path.to_owned(),
+        files: path.join("files"),
+        info: path.join("info"),
+    };
+
+    for path in [
+        trash_dir.path.as_path(),
+        trash_dir.files.as_path(),
+        trash_dir.info.as_path(),
+    ] {
+        create_dir_all_with_permissions(path, OWNER_RWX_MODE)?;
+    }
+
+    Ok(trash_dir)
+}
+
+fn create_dir_all_with_permissions(path: &Path, mode: u32) -> Result<()> {
+    let validate_existing_dir = |path: &Path| -> Result<()> {
+        let metadata = path.symlink_metadata().map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source: io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "path exists but is a symlink",
+                ),
+            });
+        }
+
+        if !file_type.is_dir() {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source: io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "path exists but is not a directory",
+                ),
+            });
+        }
+
+        Ok(())
+    };
+
+    match std::fs::create_dir(path) {
+        Ok(()) => {
+            set_permissions_mode(path, mode)?;
+            return Ok(());
+        }
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            return validate_existing_dir(path);
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    }
+
+    let Some(parent) = path.parent() else {
+        return Err(Error::Platform {
+            message: format!("Path has no parent: {}", path.display()),
+        });
+    };
+
+    create_dir_all_with_permissions(parent, mode)?;
+
+    match std::fs::create_dir(path) {
+        Ok(()) => set_permissions_mode(path, mode),
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => validate_existing_dir(path),
+        Err(source) => Err(Error::Io {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn set_permissions_mode(path: &Path, mode: u32) -> Result<()> {
+    let mut permissions = path
+        .metadata()
+        .map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?
+        .permissions();
+
+    permissions.set_mode(mode);
+
+    std::fs::set_permissions(path, permissions).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 fn prepare_trash_directory_without_creating_parent(path: &Path) -> Result<TrashDirectory> {
@@ -236,7 +389,7 @@ fn prepare_trash_directory_without_creating_parent(path: &Path) -> Result<TrashD
             source,
         })?;
     let file_type = metadata.file_type();
-    let has_sticky_bit = metadata.mode() & 0o1000 != 0;
+    let has_sticky_bit = metadata.mode() & STICKY_BIT != 0;
 
     if file_type.is_symlink() {
         return Err(Error::Platform {
@@ -262,16 +415,16 @@ fn prepare_trash_directory_without_creating_parent(path: &Path) -> Result<TrashD
         });
     }
 
-    let directory = TrashDirectory {
+    let trash_dir = TrashDirectory {
         path: path.to_owned(),
         files: path.join("files"),
         info: path.join("info"),
     };
 
     for path in [
-        directory.path.as_path(),
-        directory.files.as_path(),
-        directory.info.as_path(),
+        trash_dir.path.as_path(),
+        trash_dir.files.as_path(),
+        trash_dir.info.as_path(),
     ] {
         match std::fs::create_dir(path) {
             Ok(()) => {}
@@ -311,7 +464,7 @@ fn prepare_trash_directory_without_creating_parent(path: &Path) -> Result<TrashD
         }
     }
 
-    Ok(directory)
+    Ok(trash_dir)
 }
 
 fn prepare_external_trash_directory(path: &ExternalTrashPath) -> Result<TrashDirectory> {
@@ -320,6 +473,157 @@ fn prepare_external_trash_directory(path: &ExternalTrashPath) -> Result<TrashDir
             .or_else(|_| prepare_trash_directory(fallback)),
         None => prepare_trash_directory(&path.path),
     }
+}
+
+fn create_trash_info(
+    location: &TrashLocation,
+    trash_dir: &TrashDirectory,
+    original_path: &Path,
+    discarded_at: OffsetDateTime,
+) -> Result<ReservedTrashEntry> {
+    let original_name = original_path
+        .file_name()
+        .ok_or_else(|| Error::TargetedRoot {
+            path: original_path.to_path_buf(),
+        })?;
+    let original_location = location.trash_info_path(original_path)?;
+    let mut collision_index = 0usize;
+
+    loop {
+        let name = {
+            let mut name = original_name.to_os_string();
+            if collision_index != 0 {
+                name.push(format!(".{collision_index}"));
+            }
+
+            name
+        };
+        let file = trash_dir.files.join(&name);
+        let info = {
+            let mut info_name = name.clone();
+            info_name.push(".trashinfo");
+
+            trash_dir.info.join(info_name)
+        };
+
+        let mut info_file = match OpenOptions::new().write(true).create_new(true).open(&info) {
+            Ok(info_file) => info_file,
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                collision_index =
+                    collision_index
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Platform {
+                            message: format!(
+                                "Could not find available trash name for {}",
+                                original_path.display()
+                            ),
+                        })?;
+
+                continue;
+            }
+            Err(source) => {
+                return Err(Error::Io { path: info, source });
+            }
+        };
+
+        let contents = trash_info_contents(&original_location, discarded_at);
+
+        if let Err(source) = info_file.write_all(contents.as_bytes()) {
+            let write_path = info.clone();
+
+            match std::fs::remove_file(&info) {
+                Ok(()) => {}
+                Err(cleanup_source) if cleanup_source.kind() == io::ErrorKind::NotFound => {}
+                Err(cleanup_source) => {
+                    return Err(Error::Io {
+                        path: info,
+                        source: cleanup_source,
+                    });
+                }
+            }
+
+            return Err(Error::Io {
+                path: write_path,
+                source,
+            });
+        }
+
+        return Ok(ReservedTrashEntry { name, file, info });
+    }
+}
+
+fn current_local_time() -> Result<OffsetDateTime> {
+    OffsetDateTime::now_local().map_err(|source| Error::Platform {
+        message: format!("Failed to get local time: {source}"),
+    })
+}
+
+fn trash_info_contents(original_location: &Path, discarded_at: OffsetDateTime) -> String {
+    let path = percent_encode_path(original_location);
+    let deletion_date = {
+        let year = discarded_at.year();
+        let month = u8::from(discarded_at.month());
+        let day = discarded_at.day();
+        let hour = discarded_at.hour();
+        let minute = discarded_at.minute();
+        let second = discarded_at.second();
+
+        format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
+    };
+
+    formatdoc! {"
+        [Trash Info]
+        Path={path}
+        DeletionDate={deletion_date}
+    "}
+}
+
+fn percent_encode_path(path: &Path) -> String {
+    let mut encoded = String::new();
+
+    for byte in path.as_os_str().as_bytes() {
+        if *byte == b'/' || is_unreserved_url_byte(*byte) {
+            encoded.push(char::from(*byte));
+        } else {
+            push_percent_encoded_byte(&mut encoded, *byte);
+        }
+    }
+
+    encoded
+}
+
+fn is_unreserved_url_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')'
+    )
+}
+
+fn push_percent_encoded_byte(output: &mut String, byte: u8) {
+    let push_hex_digit = |output: &mut String, value: u8| {
+        let digit = match value {
+            0..=9 => char::from(b'0' + value),
+            10..=15 => char::from(b'A' + (value - 10)),
+            _ => return,
+        };
+
+        output.push(digit);
+    };
+
+    output.push('%');
+    push_hex_digit(output, byte >> 4);
+    push_hex_digit(output, byte & 0x0f);
 }
 
 fn canonicalize_nearest_existing_parent(path: &Path) -> Result<PathBuf> {
@@ -437,23 +741,21 @@ fn decode_mount_info_path(path: &[u8]) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    use std::os::unix::{self, fs::PermissionsExt};
+    use indoc::indoc;
+    use std::os::unix::{self, fs::MetadataExt};
     use tempfile::TempDir;
 
-    fn chmod(path: &Path, mode: u32) -> std::io::Result<()> {
-        let mut permissions = std::fs::metadata(path)?.permissions();
-        permissions.set_mode(mode);
-
-        std::fs::set_permissions(path, permissions)
-    }
+    const WORLD_RWX_STICKY_MODE: u32 = 0o1777;
+    const WORLD_RWX_MODE: u32 = 0o0777;
+    const OWNER_RWX_WORLD_RX_MODE: u32 = 0o755;
+    const PERMISSION_BITS_MASK: u32 = 0o777;
 
     #[test]
     fn test_parse_mount_info() {
-        let bytes = concat!(
-            "36 35 98:0 / / rw,relatime - ext4 /dev/root rw\n",
-            "37 36 8:1 / /home rw,nosuid - ext4 /dev/sda1 rw\n",
-        )
-        .as_bytes();
+        let bytes = indoc! {b"
+            36 35 98:0 / / rw,relatime - ext4 /dev/root rw
+            37 36 8:1 / /home rw,nosuid - ext4 /dev/sda1 rw
+        "};
         let entries = parse_mount_info(bytes).unwrap();
 
         assert_eq!(
@@ -471,27 +773,27 @@ mod tests {
 
     #[test]
     fn test_parse_mount_info_decodes_path_escapes() {
-        let bytes = b"37 36 8:1 / /media/My\\040Drive/Slash\\134Name rw - ext4 /dev/sda1 rw";
+        let bytes = b"37 36 8:1 / /media/USB\\040Drive rw - ext4 /dev/sda1 rw";
         let entries = parse_mount_info(bytes).unwrap();
 
         assert_eq!(
             entries,
             vec![MountInfo {
-                mount_point: MountPoint(PathBuf::from("/media/My Drive/Slash\\Name")),
+                mount_point: MountPoint(PathBuf::from("/media/USB Drive")),
             }]
         );
     }
 
     #[test]
     fn test_parse_mount_info_preserves_invalid_utf8() {
-        let bytes = b"37 36 8:1 / /media/invalid\\377path rw - ext4 /dev/sda1 rw";
+        let bytes = b"37 36 8:1 / /media/camera-\\377card rw - ext4 /dev/sda1 rw";
         let entries = parse_mount_info(bytes).unwrap();
 
         assert_eq!(
             entries,
             vec![MountInfo {
                 mount_point: MountPoint(PathBuf::from(OsString::from_vec(
-                    b"/media/invalid\xffpath".to_vec()
+                    b"/media/camera-\xffcard".to_vec()
                 ))),
             }]
         );
@@ -509,21 +811,21 @@ mod tests {
     fn test_find_mount_point_uses_longest_match() {
         let mounts = Mounts::new(vec![
             MountInfo {
-                mount_point: MountPoint(PathBuf::from("/foo")),
+                mount_point: MountPoint(PathBuf::from("/home")),
             },
             MountInfo {
                 mount_point: MountPoint(PathBuf::from("/")),
             },
             MountInfo {
-                mount_point: MountPoint(PathBuf::from("/foo/bar")),
+                mount_point: MountPoint(PathBuf::from("/home/user")),
             },
         ]);
 
         let mount_point = mounts
-            .find_mount_point(Path::new("/foo/bar/baz.txt"))
+            .find_mount_point(Path::new("/home/user/Downloads/file.txt"))
             .unwrap();
 
-        assert_eq!(mount_point.as_path(), Path::new("/foo/bar"));
+        assert_eq!(mount_point.as_path(), Path::new("/home/user"));
     }
 
     #[test]
@@ -533,12 +835,12 @@ mod tests {
                 mount_point: MountPoint(PathBuf::from("/")),
             },
             MountInfo {
-                mount_point: MountPoint(PathBuf::from("/foo/bar")),
+                mount_point: MountPoint(PathBuf::from("/media/user/External")),
             },
         ]);
 
         let mount_point = mounts
-            .find_mount_point(Path::new("/foo/barista/file.txt"))
+            .find_mount_point(Path::new("/media/user/ExternalSSD/file.txt"))
             .unwrap();
 
         assert_eq!(mount_point.as_path(), Path::new("/"));
@@ -597,7 +899,7 @@ mod tests {
     fn test_external_trash_path_without_shared_trash() {
         let temp_dir = TempDir::new().unwrap();
         let user_id = 1000;
-        let top_dir = temp_dir.path().join("missing");
+        let top_dir = temp_dir.path().join("media/missing-usb");
 
         std::fs::create_dir(&top_dir).unwrap();
 
@@ -616,11 +918,11 @@ mod tests {
     fn test_external_trash_path_with_valid_shared_trash() {
         let temp_dir = TempDir::new().unwrap();
         let user_id = 1000;
-        let top_dir = temp_dir.path().join("shared");
+        let top_dir = temp_dir.path().join("media/usb");
         let shared_trash = top_dir.join(".Trash");
 
         std::fs::create_dir_all(&shared_trash).unwrap();
-        chmod(&shared_trash, 0o1777).unwrap();
+        set_permissions_mode(&shared_trash, WORLD_RWX_STICKY_MODE).unwrap();
 
         let external_trash = external_trash_path(&top_dir, user_id);
 
@@ -637,12 +939,13 @@ mod tests {
     fn test_external_trash_path_ignores_symlink_shared_trash() {
         let temp_dir = TempDir::new().unwrap();
         let user_id = 1000;
-        let top_dir = temp_dir.path().join("symlink");
-        let symlink_target = temp_dir.path().join("symlink-target");
+        let top_dir = temp_dir.path().join("media/usb");
+        let trash_link = top_dir.join(".Trash");
+        let trash_link_target = temp_dir.path().join("target-usb");
 
         std::fs::create_dir(&top_dir).unwrap();
-        std::fs::create_dir(&symlink_target).unwrap();
-        unix::fs::symlink(&symlink_target, top_dir.join(".Trash")).unwrap();
+        std::fs::create_dir(&trash_link_target).unwrap();
+        unix::fs::symlink(&trash_link_target, &trash_link).unwrap();
 
         let external_trash = external_trash_path(&top_dir, user_id);
 
@@ -659,11 +962,11 @@ mod tests {
     fn test_external_trash_path_ignores_non_sticky_shared_trash() {
         let temp_dir = TempDir::new().unwrap();
         let user_id = 1000;
-        let top_dir = temp_dir.path().join("non-sticky");
+        let top_dir = temp_dir.path().join("media/usb");
         let shared_trash = top_dir.join(".Trash");
 
         std::fs::create_dir_all(&shared_trash).unwrap();
-        chmod(&shared_trash, 0o0777).unwrap();
+        set_permissions_mode(&shared_trash, WORLD_RWX_MODE).unwrap();
 
         let external_trash = external_trash_path(&top_dir, user_id);
 
@@ -685,10 +988,10 @@ mod tests {
             mount_point: MountPoint(temp_dir.path().to_owned()),
         };
 
-        let directory = location.prepare().unwrap();
+        let trash_dir = location.prepare().unwrap();
 
         assert_eq!(
-            directory,
+            trash_dir,
             TrashDirectory {
                 path: home_trash.to_path_buf(),
                 files: home_trash.join("files"),
@@ -697,6 +1000,54 @@ mod tests {
         );
         assert!(home_trash.join("files").is_dir());
         assert!(home_trash.join("info").is_dir());
+        assert_eq!(
+            home_trash.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
+        assert_eq!(
+            home_trash.join("files").metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
+        assert_eq!(
+            home_trash.join("info").metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
+    }
+
+    #[test]
+    fn test_prepare_home_trash_location_does_not_change_existing_directory_permissions() {
+        let temp_dir = TempDir::new().unwrap();
+        let home_trash = temp_dir.path().join("home/user/.local/share/Trash");
+        let location = TrashLocation::Home {
+            path: home_trash.clone(),
+            mount_point: MountPoint(temp_dir.path().to_owned()),
+        };
+
+        std::fs::create_dir_all(&home_trash).unwrap();
+        set_permissions_mode(&home_trash, OWNER_RWX_WORLD_RX_MODE).unwrap();
+
+        let trash_dir = location.prepare().unwrap();
+
+        assert_eq!(
+            trash_dir,
+            TrashDirectory {
+                path: home_trash.to_path_buf(),
+                files: home_trash.join("files"),
+                info: home_trash.join("info"),
+            }
+        );
+        assert_eq!(
+            home_trash.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_WORLD_RX_MODE
+        );
+        assert_eq!(
+            home_trash.join("files").metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
+        assert_eq!(
+            home_trash.join("info").metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
     }
 
     #[test]
@@ -715,10 +1066,10 @@ mod tests {
 
         std::fs::create_dir_all(&top_dir).unwrap();
 
-        let directory = location.prepare().unwrap();
+        let trash_dir = location.prepare().unwrap();
 
         assert_eq!(
-            directory,
+            trash_dir,
             TrashDirectory {
                 path: external_trash.to_path_buf(),
                 files: external_trash.join("files"),
@@ -746,12 +1097,12 @@ mod tests {
         };
 
         std::fs::create_dir_all(&shared_trash).unwrap();
-        chmod(&shared_trash, 0o1777).unwrap();
+        set_permissions_mode(&shared_trash, WORLD_RWX_STICKY_MODE).unwrap();
 
-        let directory = location.prepare().unwrap();
+        let trash_dir = location.prepare().unwrap();
 
         assert_eq!(
-            directory,
+            trash_dir,
             TrashDirectory {
                 path: external_trash.to_path_buf(),
                 files: external_trash.join("files"),
@@ -780,13 +1131,13 @@ mod tests {
         };
 
         std::fs::create_dir_all(&shared_trash).unwrap();
-        chmod(&shared_trash, 0o1777).unwrap();
+        set_permissions_mode(&shared_trash, WORLD_RWX_STICKY_MODE).unwrap();
         std::fs::write(&external_trash, b"file instead of directory").unwrap();
 
-        let directory = location.prepare().unwrap();
+        let trash_dir = location.prepare().unwrap();
 
         assert_eq!(
-            directory,
+            trash_dir,
             TrashDirectory {
                 path: fallback_trash.to_path_buf(),
                 files: fallback_trash.join("files"),
@@ -812,10 +1163,10 @@ mod tests {
             mount_point: MountPoint(top_dir),
         };
 
-        let directory = location.prepare().unwrap();
+        let trash_dir = location.prepare().unwrap();
 
         assert_eq!(
-            directory,
+            trash_dir,
             TrashDirectory {
                 path: fallback_trash.to_path_buf(),
                 files: fallback_trash.join("files"),
@@ -825,6 +1176,120 @@ mod tests {
         assert!(fallback_trash.join("files").is_dir());
         assert!(fallback_trash.join("info").is_dir());
         assert!(!missing_shared_trash.exists());
+    }
+
+    #[test]
+    fn test_percent_encode_path() {
+        let path = PathBuf::from(OsString::from_vec(
+            b"/home/user/Downloads/CPU usage %.log".to_vec(),
+        ));
+
+        assert_eq!(
+            percent_encode_path(&path),
+            "/home/user/Downloads/CPU%20usage%20%25.log"
+        );
+    }
+
+    #[test]
+    fn test_percent_encode_path_preserves_invalid_utf8() {
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/invalid-\xff.txt".to_vec()));
+
+        assert_eq!(percent_encode_path(&path), "/tmp/invalid-%FF.txt");
+    }
+
+    #[test]
+    fn test_trash_info_contents() {
+        let discarded_at = OffsetDateTime::from_unix_timestamp(1_779_555_000).unwrap();
+        let original_path = Path::new("/home/user/Downloads/clip 01.mp4");
+
+        let contents = trash_info_contents(original_path, discarded_at);
+
+        assert_eq!(
+            contents,
+            indoc! {"
+                [Trash Info]
+                Path=/home/user/Downloads/clip%2001.mp4
+                DeletionDate=2026-05-23T16:50:00
+            "}
+        );
+    }
+
+    #[test]
+    fn test_create_trash_info_with_duplicates() {
+        let temp_dir = TempDir::new().unwrap();
+        let trash = temp_dir.path().join("Trash");
+        let trash_dir = prepare_trash_directory(&trash).unwrap();
+        let location = TrashLocation::Home {
+            path: trash.clone(),
+            mount_point: MountPoint(PathBuf::from("/home")),
+        };
+        let original_path = Path::new("/home/user/file.txt");
+
+        let discarded_at = OffsetDateTime::from_unix_timestamp(1_779_555_000).unwrap();
+        let first = create_trash_info(&location, &trash_dir, original_path, discarded_at).unwrap();
+        let second = create_trash_info(&location, &trash_dir, original_path, discarded_at).unwrap();
+
+        assert_eq!(
+            first,
+            ReservedTrashEntry {
+                name: OsString::from("file.txt"),
+                file: trash_dir.files.join("file.txt"),
+                info: trash_dir.info.join("file.txt.trashinfo"),
+            }
+        );
+        assert_eq!(
+            second,
+            ReservedTrashEntry {
+                name: OsString::from("file.txt.1"),
+                file: trash_dir.files.join("file.txt.1"),
+                info: trash_dir.info.join("file.txt.1.trashinfo"),
+            }
+        );
+        assert!(!first.file.exists());
+        assert!(!second.file.exists());
+        assert_eq!(
+            std::fs::read_to_string(&first.info).unwrap(),
+            indoc! {"
+                [Trash Info]
+                Path=/home/user/file.txt
+                DeletionDate=2026-05-23T16:50:00
+            "}
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second.info).unwrap(),
+            indoc! {"
+                [Trash Info]
+                Path=/home/user/file.txt
+                DeletionDate=2026-05-23T16:50:00
+            "}
+        );
+    }
+
+    #[test]
+    fn test_create_trash_info_with_external_location() {
+        let temp_dir = TempDir::new().unwrap();
+        let trash = temp_dir.path().join("Trash");
+        let trash_dir = prepare_trash_directory(&trash).unwrap();
+        let location = TrashLocation::External {
+            path: ExternalTrashPath {
+                path: trash.clone(),
+                fallback_path: None,
+            },
+            mount_point: MountPoint(PathBuf::from("/media/usb")),
+        };
+        let original_path = Path::new("/media/usb/Downloads/file.txt");
+
+        let discarded_at = OffsetDateTime::from_unix_timestamp(1_779_555_000).unwrap();
+        let item = create_trash_info(&location, &trash_dir, original_path, discarded_at).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&item.info).unwrap(),
+            indoc! {"
+                [Trash Info]
+                Path=Downloads/file.txt
+                DeletionDate=2026-05-23T16:50:00
+            "}
+        );
     }
 
     #[test]
@@ -883,5 +1348,44 @@ mod tests {
                 mount_point: MountPoint(external_mount),
             }
         );
+    }
+
+    #[test]
+    fn test_trash_info_path() {
+        let user_id = 1000;
+        let home_location = TrashLocation::Home {
+            path: PathBuf::from("/home/user/.local/share/Trash"),
+            mount_point: MountPoint(PathBuf::from("/home")),
+        };
+        let external_location = TrashLocation::External {
+            path: ExternalTrashPath {
+                path: PathBuf::from(format!("/media/usb/.Trash-{user_id}")),
+                fallback_path: None,
+            },
+            mount_point: MountPoint(PathBuf::from("/media/usb")),
+        };
+
+        let home_original_location = home_location
+            .trash_info_path(Path::new("/home/user/Downloads/file.txt"))
+            .unwrap();
+        let external_original_location = external_location
+            .trash_info_path(Path::new("/media/usb/Photos/image.png"))
+            .unwrap();
+        let invalid_parent_component_error = external_location
+            .trash_info_path(Path::new("/media/usb/Photos/../image.png"))
+            .unwrap_err();
+
+        assert_eq!(
+            home_original_location,
+            PathBuf::from("/home/user/Downloads/file.txt")
+        );
+        assert_eq!(
+            external_original_location,
+            PathBuf::from("Photos/image.png")
+        );
+        assert!(matches!(
+            invalid_parent_component_error,
+            Error::Platform { .. }
+        ));
     }
 }
