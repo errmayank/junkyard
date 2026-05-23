@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: home_trash.to_path_buf(),
+                path: home_trash.clone(),
                 files: home_trash.join("files"),
                 info: home_trash.join("info"),
             }
@@ -1037,7 +1037,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: home_trash.to_path_buf(),
+                path: home_trash.clone(),
                 files: home_trash.join("files"),
                 info: home_trash.join("info"),
             }
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: external_trash.to_path_buf(),
+                path: external_trash.clone(),
                 files: external_trash.join("files"),
                 info: external_trash.join("info"),
             }
@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: external_trash.to_path_buf(),
+                path: external_trash.clone(),
                 files: external_trash.join("files"),
                 info: external_trash.join("info"),
             }
@@ -1145,7 +1145,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: fallback_trash.to_path_buf(),
+                path: fallback_trash.clone(),
                 files: fallback_trash.join("files"),
                 info: fallback_trash.join("info"),
             }
@@ -1174,7 +1174,7 @@ mod tests {
         assert_eq!(
             trash_dir,
             TrashDirectory {
-                path: fallback_trash.to_path_buf(),
+                path: fallback_trash.clone(),
                 files: fallback_trash.join("files"),
                 info: fallback_trash.join("info"),
             }
