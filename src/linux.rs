@@ -475,6 +475,14 @@ fn prepare_external_trash_directory(path: &ExternalTrashPath) -> Result<TrashDir
     }
 }
 
+fn next_collision_index(collision_index: usize, path: &Path) -> Result<usize> {
+    collision_index
+        .checked_add(1)
+        .ok_or_else(|| Error::Platform {
+            message: format!("Could not find available trash name for {}", path.display()),
+        })
+}
+
 fn create_trash_info(
     location: &TrashLocation,
     trash_dir: &TrashDirectory,
@@ -499,6 +507,12 @@ fn create_trash_info(
             name
         };
         let file = trash_dir.files.join(&name);
+
+        if path_exists(&file)? {
+            collision_index = next_collision_index(collision_index, original_path)?;
+            continue;
+        }
+
         let info = {
             let mut info_name = name.clone();
             info_name.push(".trashinfo");
@@ -509,15 +523,7 @@ fn create_trash_info(
         let mut info_file = match OpenOptions::new().write(true).create_new(true).open(&info) {
             Ok(info_file) => info_file,
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                collision_index =
-                    collision_index
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Platform {
-                            message: format!(
-                                "Could not find available trash name for {}",
-                                original_path.display()
-                            ),
-                        })?;
+                collision_index = next_collision_index(collision_index, original_path)?;
 
                 continue;
             }
