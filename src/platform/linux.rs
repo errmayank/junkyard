@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     env,
     ffi::{OsStr, OsString},
+    fmt,
     fs::OpenOptions,
     io::{self, Write},
     os::unix::{
@@ -779,7 +780,11 @@ fn directory_size_cache_contents(
         }
     }
 
-    contents.push_str(&format!("{size} {mtime} {name}\n"));
+    fmt::Write::write_fmt(&mut contents, format_args!("{size} {mtime} {name}\n")).map_err(
+        |source| Error::Platform {
+            message: format!("Failed to append directory size cache entry: {source}"),
+        },
+    )?;
 
     Ok(contents)
 }
