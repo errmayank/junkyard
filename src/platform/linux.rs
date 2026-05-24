@@ -1,5 +1,8 @@
 use indoc::formatdoc;
-use rustix::process;
+use rustix::{
+    fs::{Access, AtFlags, CWD},
+    process,
+};
 use std::{
     collections::HashSet,
     env,
@@ -34,6 +37,8 @@ pub(crate) fn discard_all(trash: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashI
 }
 
 fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
+    check_discard_permission(path)?;
+
     let trash_dir = location.prepare()?;
     let discarded_at = current_local_time()?;
 
@@ -167,6 +172,52 @@ fn path_exists(path: &Path) -> Result<bool> {
             source,
         }),
     }
+}
+
+fn check_discard_permission(path: &Path) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| Error::TargetedRoot {
+        path: path.to_path_buf(),
+    })?;
+    let metadata = path.symlink_metadata().map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let parent_metadata = parent.symlink_metadata().map_err(|source| Error::Io {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+
+    rustix::fs::accessat(
+        CWD,
+        parent,
+        Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    )
+    .map_err(|source| Error::Io {
+        path: parent.to_path_buf(),
+        source: io::Error::from(source),
+    })?;
+
+    if parent_metadata.mode() & STICKY_BIT == 0 {
+        return Ok(());
+    }
+
+    let user_id = process::geteuid().as_raw();
+    let is_root = user_id == 0;
+    let is_path_owner = user_id == metadata.uid();
+    let is_parent_owner = user_id == parent_metadata.uid();
+
+    if is_root || is_path_owner || is_parent_owner {
+        return Ok(());
+    }
+
+    Err(Error::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "sticky parent directory prevents deleting path",
+        ),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1061,9 +1112,10 @@ mod tests {
     use std::os::unix::{self, fs::MetadataExt};
     use tempfile::TempDir;
 
-    const WORLD_RWX_STICKY_MODE: u32 = 0o1777;
-    const WORLD_RWX_MODE: u32 = 0o0777;
+    const OWNER_RX_MODE: u32 = 0o500;
     const OWNER_RWX_WORLD_RX_MODE: u32 = 0o755;
+    const WORLD_RWX_MODE: u32 = 0o0777;
+    const WORLD_RWX_STICKY_MODE: u32 = 0o1777;
     const PERMISSION_BITS_MASK: u32 = 0o777;
 
     #[test]
@@ -1191,6 +1243,44 @@ mod tests {
 
             assert!(matches!(error, Error::Platform { .. }));
         }
+    }
+
+    #[test]
+    fn test_check_discard_permission() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().join("directory");
+        let file = dir.join("file.txt");
+
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(&file, b"contents").unwrap();
+
+        check_discard_permission(&file).expect("parent directory should allow discard");
+
+        let user_id = process::geteuid().as_raw();
+        panic!("effective user id: {user_id}");
+
+        if user_id == 0 {
+            return;
+        }
+
+        set_permissions_mode(&dir, OWNER_RX_MODE).unwrap();
+        assert_eq!(
+            dir.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RX_MODE
+        );
+        let error = check_discard_permission(&file).unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Io { source, .. } if source.kind() == io::ErrorKind::PermissionDenied
+        ));
+
+        set_permissions_mode(&dir, OWNER_RWX_MODE).unwrap();
+        assert_eq!(
+            dir.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
+            OWNER_RWX_MODE
+        );
+        check_discard_permission(&file).expect("parent directory should allow discard");
     }
 
     #[test]
