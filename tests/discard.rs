@@ -13,7 +13,7 @@ fn test_discard_file() {
 
     let trashed_item = trash.discard(&file).unwrap();
 
-    assert_eq!(trashed_item.name(), file.file_name().unwrap());
+    assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
         temp_dir.path().canonicalize().unwrap().join("file.txt")
@@ -33,7 +33,7 @@ fn test_discard_file_name_with_special_chars() {
 
     let trashed_item = trash.discard(&file).unwrap();
 
-    assert_eq!(trashed_item.name(), file.file_name().unwrap());
+    assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
         temp_dir
@@ -62,8 +62,8 @@ fn test_discard_files_with_same_name() {
     let first_item = trash.discard(&first).unwrap();
     let second_item = trash.discard(&second).unwrap();
 
-    assert_eq!(first_item.name(), first.file_name().unwrap());
-    assert_eq!(second_item.name(), second.file_name().unwrap());
+    assert_eq!(first_item.original_name(), first.file_name().unwrap());
+    assert_eq!(second_item.original_name(), second.file_name().unwrap());
     assert_ne!(first_item.id(), second_item.id());
     assert!(!first.exists());
     assert!(!second.exists());
@@ -106,7 +106,7 @@ fn test_discard_broken_symlink() {
 
     let trashed_item = trash.discard(&file_link).unwrap();
 
-    assert_eq!(trashed_item.name(), file_link.file_name().unwrap());
+    assert_eq!(trashed_item.original_name(), file_link.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
         temp_dir
@@ -133,7 +133,7 @@ fn test_discard_directory() {
 
     let trashed_item = trash.discard(&dir).unwrap();
 
-    assert_eq!(trashed_item.name(), dir.file_name().unwrap());
+    assert_eq!(trashed_item.original_name(), dir.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
         temp_dir.path().canonicalize().unwrap().join("directory")

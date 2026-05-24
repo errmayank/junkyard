@@ -14,7 +14,7 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct TrashItem {
     id: OsString,
-    name: OsString,
+    original_name: OsString,
     original_parent: PathBuf,
     discarded_at: SystemTime,
 }
@@ -23,13 +23,13 @@ impl TrashItem {
     #[must_use]
     pub(crate) fn new(
         id: OsString,
-        name: OsString,
+        original_name: OsString,
         original_parent: PathBuf,
         discarded_at: SystemTime,
     ) -> Self {
         Self {
             id,
-            name,
+            original_name,
             original_parent,
             discarded_at,
         }
@@ -48,8 +48,8 @@ impl TrashItem {
     /// Returns the trashed item's original file name.
     ///
     /// On macOS, for `/Users/me/Downloads/file.txt`, this returns `file.txt`.
-    pub fn name(&self) -> &OsStr {
-        &self.name
+    pub fn original_name(&self) -> &OsStr {
+        &self.original_name
     }
 
     /// Returns the directory that originally contained the trashed item.
@@ -67,7 +67,8 @@ impl TrashItem {
 
     /// Returns the trashed item's original full path.
     ///
-    /// This is equivalent to joining [`TrashItem::original_parent`] and [`TrashItem::name`].
+    /// This is equivalent to joining [`TrashItem::original_parent`] and
+    /// [`TrashItem::original_name`].
     ///
     /// The parent directory is canonicalized, so the returned value may be different from
     /// the path passed to [`Trash::discard`].
@@ -78,7 +79,7 @@ impl TrashItem {
     /// - For `/var/folders/example/file.txt`, this returns `/private/var/folders/example/file.txt`.
     #[must_use]
     pub fn original_path(&self) -> PathBuf {
-        self.original_parent.join(&self.name)
+        self.original_parent.join(&self.original_name)
     }
 
     /// Returns the time at which the item was trashed.

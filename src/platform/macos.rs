@@ -70,7 +70,7 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
             path.display()
         ),
     })?;
-    let name = path
+    let original_name = path
         .file_name()
         .ok_or_else(|| Error::TargetedRoot {
             path: path.to_path_buf(),
@@ -90,7 +90,7 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
 
     Ok(TrashItem::new(
         trashed_id,
-        name,
+        original_name,
         original_parent,
         SystemTime::now(),
     ))

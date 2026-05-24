@@ -67,10 +67,16 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
                 path: path.to_path_buf(),
             })?
             .to_path_buf();
+        let original_name = path
+            .file_name()
+            .ok_or_else(|| Error::TargetedRoot {
+                path: path.to_path_buf(),
+            })?
+            .to_os_string();
 
         return Ok(TrashItem::new(
             entry.info.into_os_string(),
-            entry.name,
+            original_name,
             original_parent,
             SystemTime::from(discarded_at),
         ));
@@ -1206,7 +1212,7 @@ mod tests {
         let user_id = 1000;
         let top_dir = temp_dir.path().join("media/missing-usb");
 
-        std::fs::create_dir(&top_dir).unwrap();
+        std::fs::create_dir_all(&top_dir).unwrap();
 
         let external_trash = external_trash_path(&top_dir, user_id);
 
@@ -1248,7 +1254,7 @@ mod tests {
         let trash_link = top_dir.join(".Trash");
         let trash_link_target = temp_dir.path().join("target-usb");
 
-        std::fs::create_dir(&top_dir).unwrap();
+        std::fs::create_dir_all(&top_dir).unwrap();
         std::fs::create_dir(&trash_link_target).unwrap();
         unix::fs::symlink(&trash_link_target, &trash_link).unwrap();
 
@@ -1676,7 +1682,7 @@ mod tests {
 
         let trashed_item = discard_inner(&location, &dir).unwrap();
 
-        assert_eq!(trashed_item.name(), OsStr::new("Camera"));
+        assert_eq!(trashed_item.original_name(), OsStr::new("Camera"));
         assert!(!dir.exists());
         assert!(trash.join("directorysizes").is_dir());
     }
