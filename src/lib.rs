@@ -1,9 +1,5 @@
 mod error;
-
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
+mod platform;
 mod util;
 
 pub use error::{Error, Result};
@@ -116,21 +112,7 @@ impl Trash {
     {
         let path = util::resolve_path(path.as_ref())?;
 
-        #[cfg(target_os = "linux")]
-        {
-            linux::discard(self, &path)
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            macos::discard(self, &path)
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            std::mem::drop(path);
-            unimplemented!()
-        }
+        platform::discard(self, &path)
     }
 
     /// Moves multiple paths to the system trash.
@@ -156,20 +138,6 @@ impl Trash {
             .map(|path| util::resolve_path(path.as_ref()))
             .collect::<Result<Vec<_>>>()?;
 
-        #[cfg(target_os = "linux")]
-        {
-            linux::discard_all(self, &paths)
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            macos::discard_all(self, &paths)
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            std::mem::drop(paths);
-            unimplemented!()
-        }
+        platform::discard_all(self, &paths)
     }
 }
