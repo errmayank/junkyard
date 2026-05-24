@@ -1,6 +1,7 @@
 use indoc::formatdoc;
 use rustix::process;
 use std::{
+    collections::HashSet,
     env,
     ffi::{OsStr, OsString},
     fs::OpenOptions,
@@ -18,6 +19,7 @@ use crate::{Error, Result, Trash, TrashItem};
 
 const MOUNT_INFO_PATH: &str = "/proc/self/mountinfo";
 const OWNER_RWX_MODE: u32 = 0o700;
+const STAT_BLOCK_SIZE: u64 = 512;
 const STICKY_BIT: u32 = 0o1000;
 
 pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
@@ -36,19 +38,27 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
 
     loop {
         let entry = create_trash_info(location, &trash_dir, path, discarded_at)?;
-        let move_result = move_to_trash(path, &entry.file);
+        let moved_payload = match move_to_trash(path, &entry.file) {
+            Ok(moved_payload) => moved_payload,
+            Err(error) => {
+                remove_file_if_exists(&entry.info)?;
 
-        if let Err(error) = move_result {
-            remove_reserved_info(&entry.info)?;
+                if matches!(
+                    &error,
+                    Error::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists
+                ) {
+                    continue;
+                }
 
-            if matches!(
-                &error,
-                Error::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists
-            ) {
-                continue;
+                return Err(error);
             }
+        };
 
-            return Err(error);
+        if moved_payload == PayloadKind::Directory {
+            match update_directory_size_cache(&trash_dir, &entry) {
+                Ok(()) => {}
+                Err(error) => drop(error),
+            }
         }
 
         let original_parent = path
@@ -67,7 +77,7 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
     }
 }
 
-fn move_to_trash(path: &Path, trash_path: &Path) -> Result<()> {
+fn move_to_trash(path: &Path, trash_path: &Path) -> Result<PayloadKind> {
     let file_type = path
         .symlink_metadata()
         .map_err(|source| Error::Io {
@@ -75,14 +85,18 @@ fn move_to_trash(path: &Path, trash_path: &Path) -> Result<()> {
             source,
         })?
         .file_type();
-    let is_directory = file_type.is_dir();
+    let payload_kind = if file_type.is_dir() {
+        PayloadKind::Directory
+    } else {
+        PayloadKind::File
+    };
 
-    create_trash_placeholder(trash_path, is_directory)?;
+    create_trash_placeholder(trash_path, payload_kind)?;
 
     match std::fs::rename(path, trash_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(payload_kind),
         Err(source) => {
-            remove_trash_placeholder(trash_path, is_directory)?;
+            remove_trash_placeholder(trash_path, payload_kind)?;
 
             Err(Error::Io {
                 path: path.to_path_buf(),
@@ -92,30 +106,28 @@ fn move_to_trash(path: &Path, trash_path: &Path) -> Result<()> {
     }
 }
 
-fn create_trash_placeholder(path: &Path, is_directory: bool) -> Result<()> {
-    if is_directory {
-        return std::fs::create_dir(path).map_err(|source| Error::Io {
+fn create_trash_placeholder(path: &Path, payload_kind: PayloadKind) -> Result<()> {
+    match payload_kind {
+        PayloadKind::File => OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(drop)
+            .map_err(|source| Error::Io {
+                path: path.to_path_buf(),
+                source,
+            }),
+        PayloadKind::Directory => std::fs::create_dir(path).map_err(|source| Error::Io {
             path: path.to_path_buf(),
             source,
-        });
+        }),
     }
-
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map(drop)
-        .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })
 }
 
-fn remove_trash_placeholder(path: &Path, is_directory: bool) -> Result<()> {
-    let result = if is_directory {
-        std::fs::remove_dir(path)
-    } else {
-        std::fs::remove_file(path)
+fn remove_trash_placeholder(path: &Path, payload_kind: PayloadKind) -> Result<()> {
+    let result = match payload_kind {
+        PayloadKind::File => std::fs::remove_file(path),
+        PayloadKind::Directory => std::fs::remove_dir(path),
     };
 
     match result {
@@ -128,7 +140,7 @@ fn remove_trash_placeholder(path: &Path, is_directory: bool) -> Result<()> {
     }
 }
 
-fn remove_reserved_info(path: &Path) -> Result<()> {
+fn remove_file_if_exists(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -148,6 +160,12 @@ fn path_exists(path: &Path) -> Result<bool> {
             source,
         }),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PayloadKind {
+    File,
+    Directory,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -705,6 +723,164 @@ fn trash_info_contents(original_location: &Path, discarded_at: OffsetDateTime) -
         Path={path}
         DeletionDate={deletion_date}
     "}
+}
+
+fn update_directory_size_cache(
+    trash_dir: &TrashDirectory,
+    entry: &ReservedTrashEntry,
+) -> Result<()> {
+    let cache_path = trash_dir.path.join("directorysizes");
+    let size = directory_disk_usage(&entry.file)?;
+    let mtime = entry
+        .info
+        .metadata()
+        .map_err(|source| Error::Io {
+            path: entry.info.clone(),
+            source,
+        })?
+        .mtime();
+    let name = percent_encode_path(Path::new(entry.name.as_os_str()));
+    let contents = directory_size_cache_contents(&cache_path, size, mtime, &name)?;
+
+    write_directory_size_cache(&cache_path, &contents)
+}
+
+fn directory_size_cache_contents(
+    cache_path: &Path,
+    size: u64,
+    mtime: i64,
+    name: &str,
+) -> Result<String> {
+    let mut contents = String::new();
+
+    match std::fs::read_to_string(cache_path) {
+        Ok(existing_contents) => {
+            for line in existing_contents.lines() {
+                if line.split_ascii_whitespace().nth(2) == Some(name) {
+                    continue;
+                }
+
+                contents.push_str(line);
+                contents.push('\n');
+            }
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(Error::Io {
+                path: cache_path.to_owned(),
+                source,
+            });
+        }
+    }
+
+    contents.push_str(&format!("{size} {mtime} {name}\n"));
+
+    Ok(contents)
+}
+
+fn write_directory_size_cache(cache_path: &Path, contents: &str) -> Result<()> {
+    let parent = cache_path.parent().ok_or_else(|| Error::Platform {
+        message: format!(
+            "Directory size cache path has no parent: {}",
+            cache_path.display()
+        ),
+    })?;
+    let process_id = std::process::id();
+    let mut collision_index = 0usize;
+
+    loop {
+        let temporary_file = parent.join(format!(
+            ".directorysizes.{process_id}.{collision_index}.tmp"
+        ));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_file)
+        {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                collision_index = next_collision_index(collision_index, cache_path)?;
+
+                continue;
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    path: temporary_file,
+                    source,
+                });
+            }
+        };
+
+        if let Err(source) = file.write_all(contents.as_bytes()) {
+            let write_path = temporary_file.clone();
+            remove_file_if_exists(&temporary_file)?;
+
+            return Err(Error::Io {
+                path: write_path,
+                source,
+            });
+        }
+
+        drop(file);
+
+        if let Err(source) = std::fs::rename(&temporary_file, cache_path) {
+            let rename_path = cache_path.to_owned();
+            remove_file_if_exists(&temporary_file)?;
+
+            return Err(Error::Io {
+                path: rename_path,
+                source,
+            });
+        }
+
+        return Ok(());
+    }
+}
+
+fn directory_disk_usage(path: &Path) -> Result<u64> {
+    fn inner(path: &Path, visited: &mut HashSet<(u64, u64)>) -> Result<u64> {
+        let metadata = path.symlink_metadata().map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+
+        if !visited.insert((metadata.dev(), metadata.ino())) {
+            return Ok(0);
+        }
+
+        let mut size = metadata
+            .blocks()
+            .checked_mul(STAT_BLOCK_SIZE)
+            .ok_or_else(|| Error::Platform {
+                message: format!("Directory size overflow for {}", path.display()),
+            })?;
+
+        if !metadata.file_type().is_dir() {
+            return Ok(size);
+        }
+
+        for entry in std::fs::read_dir(path).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| Error::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            let entry_path = entry.path();
+            let entry_size = inner(&entry_path, visited)?;
+
+            size = size
+                .checked_add(entry_size)
+                .ok_or_else(|| Error::Platform {
+                    message: format!("Directory size overflow for {}", path.display()),
+                })?;
+        }
+
+        Ok(size)
+    }
+
+    inner(path, &mut HashSet::new())
 }
 
 fn percent_encode_path(path: &Path) -> String {
@@ -1457,6 +1633,101 @@ mod tests {
     }
 
     #[test]
+    fn test_discard_inner_updates_directory_size_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let trash = temp_dir.path().join("Trash");
+        let location = TrashLocation::Home {
+            path: trash.clone(),
+            mount_point: MountPoint(temp_dir.path().to_owned()),
+        };
+        let dir = temp_dir.path().join("Downloads/Camera");
+        let file = dir.join("DSC_00001.jpg");
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, b"image bytes").unwrap();
+
+        let trashed_item = discard_inner(&location, &dir).unwrap();
+        let contents = std::fs::read_to_string(trash.join("directorysizes")).unwrap();
+        let mut fields = contents.split_ascii_whitespace();
+        let size = fields.next().unwrap().parse::<u64>().unwrap();
+        let mtime = fields.next().unwrap().parse::<i64>().unwrap();
+        let name = fields.next().unwrap();
+        let trashed_dir = trash.join("files/Camera");
+        let info_mtime = Path::new(trashed_item.id()).metadata().unwrap().mtime();
+
+        assert_eq!(size, directory_disk_usage(&trashed_dir).unwrap());
+        assert_eq!(mtime, info_mtime);
+        assert_eq!(name, "Camera");
+        assert_eq!(fields.next(), None);
+    }
+
+    #[test]
+    fn test_discard_inner_succeeds_if_directory_size_cache_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let trash = temp_dir.path().join("Trash");
+        let location = TrashLocation::Home {
+            path: trash.clone(),
+            mount_point: MountPoint(temp_dir.path().to_owned()),
+        };
+        let dir = temp_dir.path().join("Downloads/Camera");
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(trash.join("directorysizes")).unwrap();
+
+        let trashed_item = discard_inner(&location, &dir).unwrap();
+
+        assert_eq!(trashed_item.name(), OsStr::new("Camera"));
+        assert!(!dir.exists());
+        assert!(trash.join("directorysizes").is_dir());
+    }
+
+    #[test]
+    fn test_directory_size_cache_contents_replaces_existing_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("directorysizes");
+
+        std::fs::write(
+            &cache_path,
+            indoc! {"
+                2048 1 Other
+                1024 2 Camera
+            "},
+        )
+        .unwrap();
+
+        let contents =
+            directory_size_cache_contents(&cache_path, 4096, 1_779_555_000, "Camera").unwrap();
+
+        assert_eq!(
+            contents,
+            indoc! {"
+                2048 1 Other
+                4096 1779555000 Camera
+            "}
+        );
+    }
+
+    #[test]
+    fn test_directory_disk_usage_does_not_follow_directory_symlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("project");
+        let shared_dir = temp_dir.path().join("shared");
+        let shared_link = project_dir.join("shared-link");
+
+        std::fs::create_dir(&project_dir).unwrap();
+        std::fs::create_dir(&shared_dir).unwrap();
+        std::fs::write(shared_dir.join("LICENSE"), b"license text").unwrap();
+        unix::fs::symlink(&shared_dir, &shared_link).unwrap();
+
+        let size = directory_disk_usage(&project_dir).unwrap();
+        let expected_size = (project_dir.symlink_metadata().unwrap().blocks()
+            + shared_link.symlink_metadata().unwrap().blocks())
+            * STAT_BLOCK_SIZE;
+
+        assert_eq!(size, expected_size);
+    }
+
+    #[test]
     fn test_select_trash_location() {
         let temp_dir = TempDir::new().unwrap();
         let user_id = 1000;
@@ -1533,10 +1804,10 @@ mod tests {
             .trash_info_path(Path::new("/home/user/Downloads/file.txt"))
             .unwrap();
         let external_original_location = external_location
-            .trash_info_path(Path::new("/media/usb/Photos/image.png"))
+            .trash_info_path(Path::new("/media/usb/Photos/image.jpg"))
             .unwrap();
         let invalid_parent_component_error = external_location
-            .trash_info_path(Path::new("/media/usb/Photos/../image.png"))
+            .trash_info_path(Path::new("/media/usb/Photos/../image.jpg"))
             .unwrap_err();
 
         assert_eq!(
@@ -1545,7 +1816,7 @@ mod tests {
         );
         assert_eq!(
             external_original_location,
-            PathBuf::from("Photos/image.png")
+            PathBuf::from("Photos/image.jpg")
         );
         assert!(matches!(
             invalid_parent_component_error,
