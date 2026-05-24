@@ -10,6 +10,7 @@ use std::{
         fs::{MetadataExt, PermissionsExt},
     },
     path::{Component, Path, PathBuf},
+    time::SystemTime,
 };
 use time::OffsetDateTime;
 
@@ -20,11 +21,133 @@ const OWNER_RWX_MODE: u32 = 0o700;
 const STICKY_BIT: u32 = 0o1000;
 
 pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
-    unimplemented!()
+    let location = TrashLocation::resolve(path)?;
+
+    discard_inner(&location, path)
 }
 
-pub(crate) fn discard_all(_: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>> {
-    unimplemented!()
+pub(crate) fn discard_all(trash: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>> {
+    paths.iter().map(|path| discard(trash, path)).collect()
+}
+
+fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
+    let trash_dir = location.prepare()?;
+    let discarded_at = current_local_time()?;
+
+    loop {
+        let entry = create_trash_info(location, &trash_dir, path, discarded_at)?;
+        let move_result = move_to_trash(path, &entry.file);
+
+        if let Err(error) = move_result {
+            remove_reserved_info(&entry.info)?;
+
+            if matches!(
+                &error,
+                Error::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists
+            ) {
+                continue;
+            }
+
+            return Err(error);
+        }
+
+        let original_parent = path
+            .parent()
+            .ok_or_else(|| Error::TargetedRoot {
+                path: path.to_path_buf(),
+            })?
+            .to_path_buf();
+
+        return Ok(TrashItem::new(
+            entry.info.into_os_string(),
+            entry.name,
+            original_parent,
+            SystemTime::from(discarded_at),
+        ));
+    }
+}
+
+fn move_to_trash(path: &Path, trash_path: &Path) -> Result<()> {
+    let file_type = path
+        .symlink_metadata()
+        .map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .file_type();
+    let is_directory = file_type.is_dir();
+
+    create_trash_placeholder(trash_path, is_directory)?;
+
+    match std::fs::rename(path, trash_path) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            remove_trash_placeholder(trash_path, is_directory)?;
+
+            Err(Error::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    }
+}
+
+fn create_trash_placeholder(path: &Path, is_directory: bool) -> Result<()> {
+    if is_directory {
+        return std::fs::create_dir(path).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(drop)
+        .map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn remove_trash_placeholder(path: &Path, is_directory: bool) -> Result<()> {
+    let result = if is_directory {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn remove_reserved_info(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn path_exists(path: &Path) -> Result<bool> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1221,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_trash_info_with_duplicates() {
+    fn test_create_trash_info_with_duplicate_trashinfo() {
         let temp_dir = TempDir::new().unwrap();
         let trash = temp_dir.path().join("Trash");
         let trash_dir = prepare_trash_directory(&trash).unwrap();
@@ -1229,7 +1352,7 @@ mod tests {
             path: trash.clone(),
             mount_point: MountPoint(PathBuf::from("/home")),
         };
-        let original_path = Path::new("/home/user/file.txt");
+        let original_path = Path::new("/home/user/Downloads/file.txt");
 
         let discarded_at = OffsetDateTime::from_unix_timestamp(1_779_555_000).unwrap();
         let first = create_trash_info(&location, &trash_dir, original_path, discarded_at).unwrap();
@@ -1257,7 +1380,7 @@ mod tests {
             std::fs::read_to_string(&first.info).unwrap(),
             indoc! {"
                 [Trash Info]
-                Path=/home/user/file.txt
+                Path=/home/user/Downloads/file.txt
                 DeletionDate=2026-05-23T16:50:00
             "}
         );
@@ -1265,7 +1388,42 @@ mod tests {
             std::fs::read_to_string(&second.info).unwrap(),
             indoc! {"
                 [Trash Info]
-                Path=/home/user/file.txt
+                Path=/home/user/Downloads/file.txt
+                DeletionDate=2026-05-23T16:50:00
+            "}
+        );
+    }
+
+    #[test]
+    fn test_create_trash_info_with_duplicate_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let trash = temp_dir.path().join("Trash");
+        let trash_dir = prepare_trash_directory(&trash).unwrap();
+        let location = TrashLocation::Home {
+            path: trash.clone(),
+            mount_point: MountPoint(PathBuf::from("/home")),
+        };
+        let original_path = Path::new("/home/user/Downloads/file.txt");
+
+        std::fs::write(trash_dir.files.join("file.txt"), b"existing").unwrap();
+
+        let discarded_at = OffsetDateTime::from_unix_timestamp(1_779_555_000).unwrap();
+        let item = create_trash_info(&location, &trash_dir, original_path, discarded_at).unwrap();
+
+        assert_eq!(
+            item,
+            ReservedTrashEntry {
+                name: OsString::from("file.txt.1"),
+                file: trash_dir.files.join("file.txt.1"),
+                info: trash_dir.info.join("file.txt.1.trashinfo"),
+            }
+        );
+        assert!(!item.file.exists());
+        assert_eq!(
+            std::fs::read_to_string(&item.info).unwrap(),
+            indoc! {"
+                [Trash Info]
+                Path=/home/user/Downloads/file.txt
                 DeletionDate=2026-05-23T16:50:00
             "}
         );

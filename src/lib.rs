@@ -41,6 +41,8 @@ impl TrashItem {
 
     /// Returns the platform-specific identifier for the trashed item.
     ///
+    /// On Linux, this is the absolute path to the `.trashinfo` file.
+    ///
     /// On macOS, this is the filesystem representation of the URL returned by
     /// `NSFileManager::trashItemAtURL`.
     pub fn id(&self) -> &OsStr {
