@@ -1256,11 +1256,8 @@ mod tests {
 
         check_discard_permission(&file).expect("parent directory should allow discard");
 
-        let user_id = process::geteuid().as_raw();
-        panic!("effective user id: {user_id}");
-
-        if user_id == 0 {
-            return;
+        if process::geteuid().as_raw() == 0 {
+            panic!("unwritable parent rejection requires non-root user");
         }
 
         set_permissions_mode(&dir, OWNER_RX_MODE).unwrap();
