@@ -63,7 +63,7 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
         if moved_payload == PayloadKind::Directory {
             match update_directory_size_cache(&trash_dir, &entry) {
                 Ok(()) => {}
-                Err(error) => drop(error),
+                Err(_) => {}
             }
         }
 
@@ -338,6 +338,13 @@ impl TrashLocation {
             .ok_or_else(|| Error::Platform {
                 message: format!("No mount point found for {}", path.display()),
             })?;
+
+        if path == target_mount.as_path() {
+            return Err(Error::TargetedRoot {
+                path: path.to_path_buf(),
+            });
+        }
+
         let home_mount = mounts
             .find_mount_point(home_trash)
             .ok_or_else(|| Error::Platform {
@@ -1864,6 +1871,9 @@ mod tests {
             }
         );
 
+        let error = TrashLocation::select(&home_mount, &mounts, &home_trash, user_id).unwrap_err();
+        assert!(matches!(error, Error::TargetedRoot { .. }));
+
         let location = TrashLocation::select(
             &external_mount.join("file.txt"),
             &mounts,
@@ -1882,6 +1892,10 @@ mod tests {
                 mount_point: MountPoint(external_mount),
             }
         );
+
+        let error =
+            TrashLocation::select(&external_mount, &mounts, &home_trash, user_id).unwrap_err();
+        assert!(matches!(error, Error::TargetedRoot { .. }));
     }
 
     #[test]
