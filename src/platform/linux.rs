@@ -1256,9 +1256,10 @@ mod tests {
 
         check_discard_permission(&file).expect("parent directory should allow discard");
 
-        if process::geteuid().as_raw() == 0 {
-            panic!("unwritable parent rejection requires non-root user");
-        }
+        assert!(
+            process::geteuid().as_raw() != 0,
+            "unwritable parent rejection requires non-root user"
+        );
 
         set_permissions_mode(&dir, OWNER_RX_MODE).unwrap();
         assert_eq!(
