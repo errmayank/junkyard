@@ -1889,7 +1889,7 @@ mod tests {
                     path: external_mount.join(format!(".Trash-{user_id}")),
                     fallback_path: None,
                 },
-                mount_point: MountPoint(external_mount),
+                mount_point: MountPoint(external_mount.clone()),
             }
         );
 
