@@ -61,10 +61,10 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
         };
 
         if moved_payload == PayloadKind::Directory {
-            match update_directory_size_cache(&trash_dir, &entry) {
-                Ok(()) => {}
-                Err(_) => {}
-            }
+            let result = update_directory_size_cache(&trash_dir, &entry);
+
+            // The item is already in trash, so cache update failures are intentionally non-fatal.
+            drop(result);
         }
 
         let original_parent = path
