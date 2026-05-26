@@ -1289,6 +1289,19 @@ mod tests {
     }
 
     #[test]
+    fn test_check_discard_permission_with_sticky_parent() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().join("directory");
+        let file = dir.join("file.txt");
+
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(&file, b"contents").unwrap();
+        set_permissions_mode(&dir, WORLD_RWX_STICKY_MODE).unwrap();
+
+        check_discard_permission(&file).expect("path owner should be allowed in sticky parent");
+    }
+
+    #[test]
     fn test_canonicalize_nearest_existing_parent() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path().join("directory");
