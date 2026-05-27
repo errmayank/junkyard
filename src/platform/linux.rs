@@ -37,7 +37,7 @@ pub(crate) fn discard_all(trash: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashI
 }
 
 fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
-    check_discard_permission(path)?;
+    ensure_discard_permission(path)?;
 
     let trash_dir = location.prepare()?;
     let discarded_at = current_local_time()?;
@@ -174,7 +174,7 @@ fn path_exists(path: &Path) -> Result<bool> {
     }
 }
 
-fn check_discard_permission(path: &Path) -> Result<()> {
+fn ensure_discard_permission(path: &Path) -> Result<()> {
     let parent = path.parent().ok_or_else(|| Error::TargetedRoot {
         path: path.to_path_buf(),
     })?;
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_discard_permission() {
+    fn test_ensure_discard_permission() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path().join("directory");
         let file = dir.join("file.txt");
@@ -1261,7 +1261,7 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(&file, b"contents").unwrap();
 
-        check_discard_permission(&file).expect("parent directory should allow discard");
+        ensure_discard_permission(&file).expect("parent directory should allow discard");
 
         assert!(
             process::geteuid().as_raw() != 0,
@@ -1273,7 +1273,7 @@ mod tests {
             dir.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
             OWNER_RX_MODE
         );
-        let error = check_discard_permission(&file).unwrap_err();
+        let error = ensure_discard_permission(&file).unwrap_err();
 
         assert!(matches!(
             error,
@@ -1285,11 +1285,11 @@ mod tests {
             dir.metadata().unwrap().mode() & PERMISSION_BITS_MASK,
             OWNER_RWX_MODE
         );
-        check_discard_permission(&file).expect("parent directory should allow discard");
+        ensure_discard_permission(&file).expect("parent directory should allow discard");
     }
 
     #[test]
-    fn test_check_discard_permission_with_sticky_parent() {
+    fn test_ensure_discard_permission_with_sticky_parent() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path().join("directory");
         let file = dir.join("file.txt");
@@ -1298,7 +1298,7 @@ mod tests {
         std::fs::write(&file, b"contents").unwrap();
         set_permissions_mode(&dir, WORLD_RWX_STICKY_MODE).unwrap();
 
-        check_discard_permission(&file).expect("path owner should be allowed in sticky parent");
+        ensure_discard_permission(&file).expect("path owner should be allowed in sticky parent");
     }
 
     #[test]
