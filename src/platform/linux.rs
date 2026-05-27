@@ -495,50 +495,20 @@ fn prepare_home_trash_directory(path: &Path) -> Result<TrashDirectory> {
         trash_dir.files.as_path(),
         trash_dir.info.as_path(),
     ] {
-        create_dir_all_with_permissions(path, OWNER_RWX_MODE)?;
+        create_home_trash_directory(path)?;
     }
 
     Ok(trash_dir)
 }
 
-fn create_dir_all_with_permissions(path: &Path, mode: u32) -> Result<()> {
-    let validate_existing_dir = |path: &Path| -> Result<()> {
-        let metadata = path.symlink_metadata().map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        let file_type = metadata.file_type();
-
-        if file_type.is_symlink() {
-            return Err(Error::Io {
-                path: path.to_owned(),
-                source: io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "path exists but is a symlink",
-                ),
-            });
-        }
-
-        if !file_type.is_dir() {
-            return Err(Error::Io {
-                path: path.to_owned(),
-                source: io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "path exists but is not a directory",
-                ),
-            });
-        }
-
-        Ok(())
-    };
-
+fn create_home_trash_directory(path: &Path) -> Result<()> {
     match std::fs::create_dir(path) {
         Ok(()) => {
-            set_permissions_mode(path, mode)?;
+            set_permissions_mode(path, OWNER_RWX_MODE)?;
             return Ok(());
         }
         Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            return validate_existing_dir(path);
+            return ensure_existing_directory(path);
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
         Err(source) => {
@@ -555,16 +525,37 @@ fn create_dir_all_with_permissions(path: &Path, mode: u32) -> Result<()> {
         });
     };
 
-    create_dir_all_with_permissions(parent, mode)?;
+    create_home_trash_directory(parent)?;
 
     match std::fs::create_dir(path) {
-        Ok(()) => set_permissions_mode(path, mode),
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => validate_existing_dir(path),
+        Ok(()) => set_permissions_mode(path, OWNER_RWX_MODE),
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            ensure_existing_directory(path)
+        }
         Err(source) => Err(Error::Io {
             path: path.to_owned(),
             source,
         }),
     }
+}
+
+fn ensure_existing_directory(path: &Path) -> Result<()> {
+    let metadata = path.metadata().map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+
+    if !metadata.file_type().is_dir() {
+        return Err(Error::Io {
+            path: path.to_owned(),
+            source: io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "path exists but is not a directory",
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn set_permissions_mode(path: &Path, mode: u32) -> Result<()> {
@@ -1472,6 +1463,34 @@ mod tests {
             home_trash.join("info").metadata().unwrap().mode() & PERMISSION_BITS_MASK,
             OWNER_RWX_MODE
         );
+    }
+
+    #[test]
+    fn test_prepare_home_trash_location_with_directory_symlink() {
+        let temp_dir = TempDir::new().unwrap();
+        let home_trash = temp_dir.path().join("home/user/.local/share/Trash");
+        let linked_trash = temp_dir.path().join("linked-trash");
+        let location = TrashLocation::Home {
+            path: home_trash.clone(),
+            mount_point: MountPoint(temp_dir.path().to_owned()),
+        };
+
+        std::fs::create_dir_all(home_trash.parent().unwrap()).unwrap();
+        std::fs::create_dir(&linked_trash).unwrap();
+        unix::fs::symlink(&linked_trash, &home_trash).unwrap();
+
+        let trash_dir = location.prepare().unwrap();
+
+        assert_eq!(
+            trash_dir,
+            TrashDirectory {
+                path: home_trash.clone(),
+                files: home_trash.join("files"),
+                info: home_trash.join("info"),
+            }
+        );
+        assert!(linked_trash.join("files").is_dir());
+        assert!(linked_trash.join("info").is_dir());
     }
 
     #[test]
