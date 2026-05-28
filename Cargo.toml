@@ -1,7 +1,7 @@
 [package]
 name = "junkyard"
-description = "Cross-platform system trash API."
 version = "0.0.0"
+description = "Cross-platform system trash API."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/errmayank/junkyard"
 readme = "README.md"
@@ -10,6 +10,31 @@ keywords = ["trash", "recycle", "bin"]
 edition = "2024"
 rust-version = "1.85.0"
 include = ["/Cargo.toml", "/LICENSE*", "/README.md", "/src/**"]
+
+[dependencies]
+thiserror = { version = "2" }
+
+[dev-dependencies]
+tempfile = { version = "3.27" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+indoc = { version = "2" }
+rustix = { version = "1.1", default-features = false, features = [
+  "fs",
+  "process",
+  "std",
+] }
+time = { version = "0.3", default-features = false, features = [
+  "local-offset",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSError",
+  "NSFileManager",
+  "NSURL",
+  "std",
+] }
 
 [lints.rust]
 # Visibility.
@@ -44,7 +69,6 @@ panic = "warn"
 panic_in_result_fn = "warn"
 string_slice = "warn"
 todo = "warn"
-unimplemented = "warn"
 unreachable = "warn"
 unwrap_in_result = "warn"
 unwrap_used = "warn"
