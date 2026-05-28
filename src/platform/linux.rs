@@ -415,23 +415,23 @@ impl TrashLocation {
 }
 
 fn home_trash_path(xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> Result<PathBuf> {
-    if let Some(xdg_data_home) = xdg_data_home
-        && !xdg_data_home.is_empty()
-    {
-        let xdg_data_home = Path::new(xdg_data_home);
+    if let Some(xdg_data_home) = xdg_data_home {
+        if !xdg_data_home.is_empty() {
+            let xdg_data_home = Path::new(xdg_data_home);
 
-        if xdg_data_home.is_absolute() {
-            return Ok(xdg_data_home.join("Trash"));
+            if xdg_data_home.is_absolute() {
+                return Ok(xdg_data_home.join("Trash"));
+            }
         }
     }
 
-    if let Some(home) = home
-        && !home.is_empty()
-    {
-        let home = Path::new(home);
+    if let Some(home) = home {
+        if !home.is_empty() {
+            let home = Path::new(home);
 
-        if home.is_absolute() {
-            return Ok(home.join(".local/share/Trash"));
+            if home.is_absolute() {
+                return Ok(home.join(".local/share/Trash"));
+            }
         }
     }
 
