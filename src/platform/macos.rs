@@ -47,7 +47,7 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
     let path_ptr = NonNull::from(first_byte).cast::<c_char>();
 
     // SAFETY: `path_ptr` points into `path_cstring`, which is NUL-terminated and
-    // stays alive for this call.
+    // remains valid for the duration of this call.
     let url = unsafe {
         NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
             path_ptr,
