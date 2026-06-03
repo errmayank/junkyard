@@ -36,6 +36,13 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "std",
 ] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+] }
+
 [lints.rust]
 # Visibility.
 missing_debug_implementations = "warn"
