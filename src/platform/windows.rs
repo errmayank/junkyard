@@ -9,16 +9,14 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use windows::{
-    Win32::{
-        Foundation::E_FAIL,
-        System::Com::{self, CLSCTX_ALL},
-        UI::Shell::{
-            self, FOF_NO_CONNECTED_ELEMENTS, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
-            FOFX_ADDUNDORECORD, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FileOperation,
-            IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl,
-            IShellItem, SIGDN_DESKTOPABSOLUTEPARSING,
-        },
+use windows::Win32::{
+    Foundation::E_FAIL,
+    System::Com::{self, CLSCTX_ALL},
+    UI::Shell::{
+        self, FOF_NO_CONNECTED_ELEMENTS, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
+        FOFX_ADDUNDORECORD, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FileOperation, IFileOperation,
+        IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+        SIGDN_DESKTOPABSOLUTEPARSING,
     },
 };
 use windows_core::{GUID, HRESULT, PCWSTR, PWSTR, Ref, implement};
@@ -460,7 +458,7 @@ impl RecycleProgressSink {
             )
         })?;
 
-        match state.as_ref() {
+        match &*state {
             RecycleProgressState::Failed { message } => Ok(Some(message.clone())),
             _ => Ok(None),
         }
@@ -471,7 +469,7 @@ impl RecycleProgressSink {
             message: format!("Recycle progress state was poisoned for {}", path.display()),
         })?;
 
-        match state.as_ref() {
+        match &*state {
             RecycleProgressState::Pending => Err(Error::Platform {
                 message: format!(
                     "Windows did not return a recycled shell item for {}",
@@ -613,12 +611,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         Ok(())
     }
 
-    fn PreNewItem(
-        &self,
-        _: u32,
-        _: Ref<'_, IShellItem>,
-        _: &PCWSTR,
-    ) -> windows_core::Result<()> {
+    fn PreNewItem(&self, _: u32, _: Ref<'_, IShellItem>, _: &PCWSTR) -> windows_core::Result<()> {
         Ok(())
     }
 
