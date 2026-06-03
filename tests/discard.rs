@@ -1,4 +1,6 @@
-use std::{os::unix, path::Path};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix;
+use std::path::Path;
 use tempfile::TempDir;
 
 use junkyard::{Error, Trash};
@@ -25,9 +27,12 @@ fn test_discard_file() {
 fn test_discard_file_name_with_special_chars() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
-    let file = temp_dir
-        .path()
-        .join(r#"quote" percent% backslash\ café 日本語.txt"#);
+    let file_name = if cfg!(target_os = "windows") {
+        "percent% plus+ comma, café 日本語.txt"
+    } else {
+        r#"quote" percent% plus+ comma, backslash\ café 日本語.txt"#
+    };
+    let file = temp_dir.path().join(file_name);
 
     std::fs::write(&file, b"junk").unwrap();
 
@@ -36,11 +41,7 @@ fn test_discard_file_name_with_special_chars() {
     assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
     assert_eq!(
         trashed_item.original_path(),
-        temp_dir
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join(r#"quote" percent% backslash\ café 日本語.txt"#)
+        temp_dir.path().canonicalize().unwrap().join(file_name)
     );
     assert!(!file.exists());
 }
@@ -69,6 +70,7 @@ fn test_discard_files_with_same_name() {
     assert!(!second.exists());
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn test_discard_file_with_parent_symlink() {
     let temp_dir = TempDir::new().unwrap();
@@ -95,6 +97,7 @@ fn test_discard_file_with_parent_symlink() {
     assert!(file.exists());
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn test_discard_broken_symlink() {
     let temp_dir = TempDir::new().unwrap();
@@ -190,7 +193,13 @@ fn test_discard_all_with_invalid_path_aborts() {
     assert!(first.exists());
     assert!(second.exists());
 
-    let result = trash.discard_all([first.as_path(), Path::new("/"), second.as_path()]);
+    let root = std::env::current_dir()
+        .unwrap()
+        .ancestors()
+        .last()
+        .unwrap()
+        .to_path_buf();
+    let result = trash.discard_all([first.as_path(), root.as_path(), second.as_path()]);
 
     assert!(matches!(result, Err(Error::TargetedRoot { .. })));
     assert!(first.exists());
@@ -200,7 +209,13 @@ fn test_discard_all_with_invalid_path_aborts() {
 #[test]
 fn test_discard_root_path() {
     let trash = Trash::new();
-    let result = trash.discard(Path::new("/"));
+    let root = std::env::current_dir()
+        .unwrap()
+        .ancestors()
+        .last()
+        .unwrap()
+        .to_path_buf();
+    let result = trash.discard(root);
 
     assert!(matches!(result, Err(Error::TargetedRoot { .. })));
 }

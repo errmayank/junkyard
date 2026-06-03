@@ -84,14 +84,15 @@ impl<'a> ShellFileOperation<'a> {
     fn new(_com_apartment: &'a ComApartment, path: &Path) -> Result<Self> {
         // SAFETY: `_com_apartment` guarantees COM is initialized on this thread and
         // `FileOperation` is the Shell-provided CLSID for `IFileOperation`.
-        let operation: IFileOperation =
-            unsafe { Com::CoCreateInstance(&FileOperation as *const GUID, None, CLSCTX_ALL) }
-                .map_err(|source| Error::Platform {
-                    message: format!(
-                        "Failed to create Windows file operation for {}: {source}",
-                        path.display()
-                    ),
-                })?;
+        let operation: IFileOperation = unsafe {
+            Com::CoCreateInstance(std::ptr::from_ref::<GUID>(&FileOperation), None, CLSCTX_ALL)
+        }
+        .map_err(|source| Error::Platform {
+            message: format!(
+                "Failed to create Windows file operation for {}: {source}",
+                path.display()
+            ),
+        })?;
 
         Ok(Self {
             operation,
@@ -150,7 +151,7 @@ impl<'a> ShellFileOperation<'a> {
         // SAFETY: `self.operation` comes from a successful `CoCreateInstance` call and
         // remains valid after `PerformOperations` returns.
         let operation_aborted = unsafe { self.operation.GetAnyOperationsAborted() }
-            .map(|operations_aborted| operations_aborted.as_bool())
+            .map(windows_core::BOOL::as_bool)
             .map_err(|source| Error::Platform {
                 message: format!(
                     "Failed to inspect Windows recycle operation for {}: {source}",
@@ -162,13 +163,14 @@ impl<'a> ShellFileOperation<'a> {
             Err(inspect_error) => match operation_result {
                 Ok(()) => return Err(inspect_error),
                 Err(source) => {
-                    if let Some(message) =
-                        progress_sink.failure_message().map_err(|_| Error::Platform {
+                    if let Some(message) = progress_sink.failure_message().map_err(
+                        |progress_error| Error::Platform {
                             message: format!(
-                                "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {source}",
+                                "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
                                 path.display()
                             ),
-                        })?
+                        },
+                    )?
                     {
                         return Err(Error::Platform {
                             message: format!(
@@ -197,13 +199,14 @@ impl<'a> ShellFileOperation<'a> {
             }),
             Ok(()) => Ok(()),
             Err(source) => {
-                if let Some(message) =
-                    progress_sink.failure_message().map_err(|_| Error::Platform {
+                if let Some(message) = progress_sink.failure_message().map_err(
+                    |progress_error| Error::Platform {
                         message: format!(
-                            "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {source}",
+                            "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
                             path.display()
                         ),
-                    })?
+                    },
+                )?
                 {
                     return Err(Error::Platform {
                         message: format!(
@@ -367,10 +370,10 @@ fn record_progress_failure(
     state: &Arc<Mutex<RecycleProgressState>>,
     failure: impl Into<String>,
 ) -> windows_core::Result<()> {
-    let mut state = state.lock().map_err(|_| {
+    let mut state = state.lock().map_err(|source| {
         windows_core::Error::new(
             E_FAIL,
-            "Recycle progress state was poisoned while recording failure",
+            format!("Recycle progress state was poisoned while recording failure: {source}"),
         )
     })?;
 
@@ -451,10 +454,10 @@ impl RecycleProgressSink {
     }
 
     fn failure_message(&self) -> windows_core::Result<Option<String>> {
-        let state = self.state.lock().map_err(|_| {
+        let state = self.state.lock().map_err(|source| {
             windows_core::Error::new(
                 E_FAIL,
-                "Recycle progress state was poisoned while reading failure",
+                format!("Recycle progress state was poisoned while reading failure: {source}"),
             )
         })?;
 
@@ -465,8 +468,11 @@ impl RecycleProgressSink {
     }
 
     fn recycled_item_id(&self, path: &Path) -> Result<OsString> {
-        let state = self.state.lock().map_err(|_| Error::Platform {
-            message: format!("Recycle progress state was poisoned for {}", path.display()),
+        let state = self.state.lock().map_err(|source| Error::Platform {
+            message: format!(
+                "Recycle progress state was poisoned for {}: {source}",
+                path.display()
+            ),
         })?;
 
         match &*state {
@@ -521,10 +527,12 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
             }
         };
 
-        let mut state = self.state.lock().map_err(|_| {
+        let mut state = self.state.lock().map_err(|source| {
             windows_core::Error::new(
                 E_FAIL,
-                "Recycle progress state was poisoned while recording recycled item",
+                format!(
+                    "Recycle progress state was poisoned while recording recycled item: {source}"
+                ),
             )
         })?;
 
