@@ -20,8 +20,8 @@ use windows::{
             IShellItem, SIGDN_DESKTOPABSOLUTEPARSING,
         },
     },
-    core::{self, GUID, HRESULT, PCWSTR, PWSTR, Ref, implement},
 };
+use windows_core::{GUID, HRESULT, PCWSTR, PWSTR, Ref, implement};
 
 use sta_thread::{ComApartment, run_on_sta_thread};
 
@@ -368,9 +368,9 @@ fn is_reserved_device_name(file_name: &str) -> bool {
 fn record_progress_failure(
     state: &Arc<Mutex<RecycleProgressState>>,
     failure: impl Into<String>,
-) -> core::Result<()> {
+) -> windows_core::Result<()> {
     let mut state = state.lock().map_err(|_| {
-        core::Error::new(
+        windows_core::Error::new(
             E_FAIL,
             "Recycle progress state was poisoned while recording failure",
         )
@@ -387,12 +387,12 @@ fn record_progress_failure(
 struct ShellAllocatedString(PWSTR);
 
 impl ShellAllocatedString {
-    fn new(shell_item: &IShellItem) -> core::Result<Self> {
+    fn new(shell_item: &IShellItem) -> windows_core::Result<Self> {
         // SAFETY: `shell_item` remains valid for the duration of this call and the
         // returned string pointer is released by `ShellAllocatedString::drop`.
         let pointer = unsafe { shell_item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)? };
         if pointer.is_null() {
-            return Err(core::Error::new(
+            return Err(windows_core::Error::new(
                 E_FAIL,
                 "Shell returned a null display name for the recycled item",
             ));
@@ -452,9 +452,9 @@ impl RecycleProgressSink {
         .into()
     }
 
-    fn failure_message(&self) -> core::Result<Option<String>> {
+    fn failure_message(&self) -> windows_core::Result<Option<String>> {
         let state = self.state.lock().map_err(|_| {
-            core::Error::new(
+            windows_core::Error::new(
                 E_FAIL,
                 "Recycle progress state was poisoned while reading failure",
             )
@@ -493,9 +493,9 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: Ref<'_, IShellItem>,
         delete_result: HRESULT,
         recycled_item: Ref<'_, IShellItem>,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         if delete_result.is_err() {
-            let source = core::Error::from(delete_result);
+            let source = windows_core::Error::from(delete_result);
             record_progress_failure(
                 &self.state,
                 format!("Shell delete operation failed: {source}"),
@@ -508,7 +508,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
             let message = "Shell permanently deleted the item instead of recycling it";
             record_progress_failure(&self.state, message)?;
 
-            return Err(core::Error::new(E_FAIL, message));
+            return Err(windows_core::Error::new(E_FAIL, message));
         };
 
         let recycled_id = match ShellAllocatedString::new(recycled_item) {
@@ -524,7 +524,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         };
 
         let mut state = self.state.lock().map_err(|_| {
-            core::Error::new(
+            windows_core::Error::new(
                 E_FAIL,
                 "Recycle progress state was poisoned while recording recycled item",
             )
@@ -537,15 +537,20 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         Ok(())
     }
 
-    fn StartOperations(&self) -> core::Result<()> {
+    fn StartOperations(&self) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn FinishOperations(&self, _: HRESULT) -> core::Result<()> {
+    fn FinishOperations(&self, _: HRESULT) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn PreRenameItem(&self, _: u32, _: Ref<'_, IShellItem>, _: &PCWSTR) -> core::Result<()> {
+    fn PreRenameItem(
+        &self,
+        _: u32,
+        _: Ref<'_, IShellItem>,
+        _: &PCWSTR,
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -556,7 +561,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: &PCWSTR,
         _: HRESULT,
         _: Ref<'_, IShellItem>,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -566,7 +571,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: Ref<'_, IShellItem>,
         _: Ref<'_, IShellItem>,
         _: &PCWSTR,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -578,7 +583,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: &PCWSTR,
         _: HRESULT,
         _: Ref<'_, IShellItem>,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -588,7 +593,7 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: Ref<'_, IShellItem>,
         _: Ref<'_, IShellItem>,
         _: &PCWSTR,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -600,15 +605,20 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: &PCWSTR,
         _: HRESULT,
         _: Ref<'_, IShellItem>,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn PreDeleteItem(&self, _: u32, _: Ref<'_, IShellItem>) -> core::Result<()> {
+    fn PreDeleteItem(&self, _: u32, _: Ref<'_, IShellItem>) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn PreNewItem(&self, _: u32, _: Ref<'_, IShellItem>, _: &PCWSTR) -> core::Result<()> {
+    fn PreNewItem(
+        &self,
+        _: u32,
+        _: Ref<'_, IShellItem>,
+        _: &PCWSTR,
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
@@ -621,23 +631,23 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
         _: u32,
         _: HRESULT,
         _: Ref<'_, IShellItem>,
-    ) -> core::Result<()> {
+    ) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn UpdateProgress(&self, _: u32, _: u32) -> core::Result<()> {
+    fn UpdateProgress(&self, _: u32, _: u32) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn ResetTimer(&self) -> core::Result<()> {
+    fn ResetTimer(&self) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn PauseTimer(&self) -> core::Result<()> {
+    fn PauseTimer(&self) -> windows_core::Result<()> {
         Ok(())
     }
 
-    fn ResumeTimer(&self) -> core::Result<()> {
+    fn ResumeTimer(&self) -> windows_core::Result<()> {
         Ok(())
     }
 }
