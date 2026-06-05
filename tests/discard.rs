@@ -13,13 +13,15 @@ fn test_discard_file() {
 
     std::fs::write(&file, b"junk").unwrap();
 
+    #[cfg(target_os = "windows")]
+    let expected_path = file.clone();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let expected_path = file.canonicalize().unwrap();
+
     let trashed_item = trash.discard(&file).unwrap();
 
     assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
-    assert_eq!(
-        trashed_item.original_path(),
-        temp_dir.path().canonicalize().unwrap().join("file.txt")
-    );
+    assert_eq!(trashed_item.original_path(), expected_path);
     assert!(!file.exists());
 }
 
@@ -36,13 +38,15 @@ fn test_discard_file_name_with_special_chars() {
 
     std::fs::write(&file, b"junk").unwrap();
 
+    #[cfg(target_os = "windows")]
+    let expected_path = file.clone();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let expected_path = file.canonicalize().unwrap();
+
     let trashed_item = trash.discard(&file).unwrap();
 
     assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
-    assert_eq!(
-        trashed_item.original_path(),
-        temp_dir.path().canonicalize().unwrap().join(file_name)
-    );
+    assert_eq!(trashed_item.original_path(), expected_path);
     assert!(!file.exists());
 }
 
@@ -134,13 +138,15 @@ fn test_discard_directory() {
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(file, b"junk").unwrap();
 
+    #[cfg(target_os = "windows")]
+    let expected_path = dir.clone();
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let expected_path = dir.canonicalize().unwrap();
+
     let trashed_item = trash.discard(&dir).unwrap();
 
     assert_eq!(trashed_item.original_name(), dir.file_name().unwrap());
-    assert_eq!(
-        trashed_item.original_path(),
-        temp_dir.path().canonicalize().unwrap().join("directory")
-    );
+    assert_eq!(trashed_item.original_path(), expected_path);
     assert!(!dir.exists());
 }
 

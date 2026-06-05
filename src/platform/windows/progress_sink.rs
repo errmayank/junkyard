@@ -210,16 +210,10 @@ impl RecycleProgressSink {
                 .map_err(metadata_error)?
                 .into_os_string();
 
-        let original_parent = PathBuf::from(original_parent);
-        let original_parent = original_parent.canonicalize().map_err(|source| Error::Io {
-            path: original_parent.clone(),
-            source,
-        })?;
-
         Ok(RecycledItem {
             id: item_id,
             original_name,
-            original_parent,
+            original_parent: PathBuf::from(original_parent),
         })
     }
 }
