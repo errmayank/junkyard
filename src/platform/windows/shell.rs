@@ -109,3 +109,66 @@ impl FileTime {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_time_from_windows() {
+        let file_time = FileTime::from_windows(FILETIME {
+            dwLowDateTime: 0x89ab_cdef,
+            dwHighDateTime: 0x0123_4567,
+        });
+
+        assert_eq!(file_time.0, 0x0123_4567_89ab_cdef);
+    }
+
+    #[test]
+    fn test_file_time_converts_nt_epoch() {
+        let system_time = FileTime(0).to_system_time().unwrap();
+
+        assert_eq!(
+            SystemTime::UNIX_EPOCH.duration_since(system_time).unwrap(),
+            Duration::from_secs(UNIX_EPOCH_FILE_TIME_TICKS / FILE_TIME_TICKS_PER_SECOND)
+        );
+    }
+
+    #[test]
+    fn test_file_time_converts_unix_epoch() {
+        let system_time = FileTime::UNIX_EPOCH.to_system_time().unwrap();
+
+        assert_eq!(system_time, SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn test_file_time_converts_before_and_after_unix_epoch() {
+        let before = FileTime(UNIX_EPOCH_FILE_TIME_TICKS - 1)
+            .to_system_time()
+            .unwrap();
+        let after = FileTime(UNIX_EPOCH_FILE_TIME_TICKS + 1)
+            .to_system_time()
+            .unwrap();
+
+        assert_eq!(
+            SystemTime::UNIX_EPOCH.duration_since(before).unwrap(),
+            Duration::from_nanos(100)
+        );
+        assert_eq!(
+            after.duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+            Duration::from_nanos(100)
+        );
+    }
+
+    #[test]
+    fn test_file_time_preserves_subsecond_precision() {
+        let system_time = FileTime(UNIX_EPOCH_FILE_TIME_TICKS + FILE_TIME_TICKS_PER_SECOND + 5)
+            .to_system_time()
+            .unwrap();
+
+        assert_eq!(
+            system_time.duration_since(SystemTime::UNIX_EPOCH).unwrap(),
+            Duration::new(1, 500)
+        );
+    }
+}
