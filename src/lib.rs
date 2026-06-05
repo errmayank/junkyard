@@ -41,6 +41,8 @@ impl TrashItem {
     ///
     /// On macOS, this is the filesystem representation of the URL returned by
     /// `NSFileManager::trashItemAtURL`.
+    ///
+    /// On Windows, this is the Shell identifier for the recycled item.
     pub fn id(&self) -> &OsStr {
         &self.id
     }
