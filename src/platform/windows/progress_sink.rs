@@ -16,7 +16,7 @@ use windows::Win32::{
     UI::Shell::{
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
         PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName, SIGDN,
-        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
+        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVEPARSING,
     },
 };
 use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
@@ -200,19 +200,26 @@ impl RecycleProgressSink {
         let shell_item: IShellItem2 =
             unsafe { SHCreateItemFromParsingName(PCWSTR(wide_item_id.as_ptr()), None) }
                 .map_err(metadata_error)?;
-        let original_name = ShellString::from_display_name(&shell_item, SIGDN_PARENTRELATIVE)
-            .map_err(metadata_error)?
-            .into_os_string();
+        let original_name =
+            ShellString::from_display_name(&shell_item, SIGDN_PARENTRELATIVEPARSING)
+                .map_err(metadata_error)?
+                .into_os_string();
 
         let original_parent =
             ShellString::from_property_string(&shell_item, &ORIGINAL_LOCATION_PROPERTY_KEY)
                 .map_err(metadata_error)?
                 .into_os_string();
 
+        let original_parent = PathBuf::from(original_parent);
+        let original_parent = original_parent.canonicalize().map_err(|source| Error::Io {
+            path: original_parent.clone(),
+            source,
+        })?;
+
         Ok(RecycledItem {
             id: item_id,
             original_name,
-            original_parent: PathBuf::from(original_parent),
+            original_parent,
         })
     }
 }
