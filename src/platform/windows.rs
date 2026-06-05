@@ -247,7 +247,7 @@ fn shell_item_from_path(_com_apartment: &ComApartment, path: &Path) -> Result<IS
                 .as_os_str()
                 .wide_path()
                 .map_err(|source| Error::Io {
-                    path: compatible_path.to_path_buf(),
+                    path: compatible_path.clone(),
                     source,
                 })?;
 
