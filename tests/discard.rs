@@ -1,9 +1,53 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::{
+    ffi::OsString,
+    io,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Storage::FileSystem::GetLongPathNameW;
+#[cfg(target_os = "windows")]
+use windows_core::PCWSTR;
+
 use tempfile::TempDir;
 
 use junkyard::{Error, Trash};
+
+#[cfg(target_os = "windows")]
+fn to_long_path(path: &Path) -> io::Result<PathBuf> {
+    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+
+    if wide_path.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains an interior NUL",
+        ));
+    }
+
+    wide_path.push(0);
+
+    // SAFETY: `wide_path` is NUL-terminated and remains valid for the duration of this call.
+    let buffer_code_units = unsafe { GetLongPathNameW(PCWSTR(wide_path.as_ptr()), None) };
+    if buffer_code_units == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut long_path = vec![0; buffer_code_units as usize];
+
+    // SAFETY: `wide_path` is NUL-terminated. `long_path` is a writable output buffer for this call.
+    let copied_code_units =
+        unsafe { GetLongPathNameW(PCWSTR(wide_path.as_ptr()), Some(&mut long_path)) };
+    if copied_code_units == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    long_path.truncate(copied_code_units as usize);
+
+    Ok(PathBuf::from(OsString::from_wide(&long_path)))
+}
 
 #[test]
 fn test_discard_file() {
@@ -14,7 +58,7 @@ fn test_discard_file() {
     std::fs::write(&file, b"junk").unwrap();
 
     #[cfg(target_os = "windows")]
-    let expected_path = file.clone();
+    let expected_path = to_long_path(&file).unwrap();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let expected_path = file.canonicalize().unwrap();
 
@@ -39,7 +83,7 @@ fn test_discard_file_name_with_special_chars() {
     std::fs::write(&file, b"junk").unwrap();
 
     #[cfg(target_os = "windows")]
-    let expected_path = file.clone();
+    let expected_path = to_long_path(&file).unwrap();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let expected_path = file.canonicalize().unwrap();
 
@@ -139,7 +183,7 @@ fn test_discard_directory() {
     std::fs::write(file, b"junk").unwrap();
 
     #[cfg(target_os = "windows")]
-    let expected_path = dir.clone();
+    let expected_path = to_long_path(&dir).unwrap();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let expected_path = dir.canonicalize().unwrap();
 
