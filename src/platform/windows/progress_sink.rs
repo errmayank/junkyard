@@ -12,11 +12,12 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{E_FAIL, PROPERTYKEY},
+    Storage::EnhancedStorage::PKEY_FileName,
     System::Com,
     UI::Shell::{
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
         PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName, SIGDN,
-        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVEPARSING,
+        SIGDN_DESKTOPABSOLUTEPARSING,
     },
 };
 use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
@@ -200,10 +201,9 @@ impl RecycleProgressSink {
         let shell_item: IShellItem2 =
             unsafe { SHCreateItemFromParsingName(PCWSTR(wide_item_id.as_ptr()), None) }
                 .map_err(metadata_error)?;
-        let original_name =
-            ShellString::from_display_name(&shell_item, SIGDN_PARENTRELATIVEPARSING)
-                .map_err(metadata_error)?
-                .into_os_string();
+        let original_name = ShellString::from_property_string(&shell_item, &PKEY_FileName)
+            .map_err(metadata_error)?
+            .into_os_string();
 
         let original_parent =
             ShellString::from_property_string(&shell_item, &ORIGINAL_LOCATION_PROPERTY_KEY)
