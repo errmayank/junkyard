@@ -1,6 +1,7 @@
+mod apartment;
 mod path;
-mod progress_sink;
-mod sta_thread;
+mod recycle;
+mod shell;
 
 use std::{
     ffi::OsStr,
@@ -18,9 +19,9 @@ use windows::Win32::{
 };
 use windows_core::{GUID, PCWSTR};
 
+use apartment::{ComApartment, run_on_sta_thread};
 use path::ShellOsStrExt;
-use progress_sink::RecycleProgressSink;
-use sta_thread::{ComApartment, run_on_sta_thread};
+use recycle::RecycleProgressSink;
 
 use crate::{Error, Result, Trash, TrashItem};
 
