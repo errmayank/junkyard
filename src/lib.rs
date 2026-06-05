@@ -37,32 +37,62 @@ impl TrashItem {
 
     /// Returns the platform-specific identifier for the trashed item.
     ///
-    /// On Linux, this is the absolute path to the `.trashinfo` file.
+    /// On Linux:
     ///
-    /// On macOS, this is the filesystem representation of the URL returned by
-    /// `NSFileManager::trashItemAtURL`.
+    /// - This is the absolute path to the `.trashinfo` file.
+    /// - For example: `/home/me/.local/share/Trash/info/file.txt.trashinfo`.
     ///
-    /// On Windows, this is the Shell identifier for the recycled item.
+    /// On macOS:
+    ///
+    /// - This is the filesystem representation of the URL returned by
+    ///   `NSFileManager::trashItemAtURL`.
+    /// - For example: `/Users/me/.Trash/file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - This is the recycled item path returned by the Shell.
+    /// - For example: `C:\$Recycle.Bin\S-1-5-21-...\$RABC123.txt`.
     pub fn id(&self) -> &OsStr {
         &self.id
     }
 
     /// Returns the trashed item's original file name.
     ///
-    /// On macOS, for `/Users/me/Downloads/file.txt`, this returns `file.txt`.
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `file.txt`.
+    ///
+    /// On macOS:
+    ///
+    /// - For `/Users/me/Downloads/file.txt`, this returns `file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Downloads\file.txt`, this returns `file.txt`.
     pub fn original_name(&self) -> &OsStr {
         &self.original_name
     }
 
     /// Returns the directory that originally contained the trashed item.
     ///
-    /// The parent directory is canonicalized, so the returned value may be different from
-    /// the parent of the path passed to [`Trash::discard`].
+    /// On Linux and macOS, the parent directory is canonicalized.
+    ///
+    /// On Windows, this is the original location recorded by the Shell.
+    /// Short 8.3 file names may be returned in their long form.
+    ///
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `/home/me/Downloads`.
     ///
     /// On macOS:
     ///
     /// - For `/Users/me/Downloads/file.txt`, this returns `/Users/me/Downloads`.
     /// - For `/var/folders/example/file.txt`, this returns `/private/var/folders/example`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Desktop\file.txt`, this returns `C:\Users\me\Desktop`.
+    /// - For `C:\Users\me\DOWNLO~1\file.txt`, this may return `C:\Users\me\Downloads`.
     pub fn original_parent(&self) -> &Path {
         &self.original_parent
     }
@@ -72,19 +102,42 @@ impl TrashItem {
     /// This is equivalent to joining [`TrashItem::original_parent`] and
     /// [`TrashItem::original_name`].
     ///
-    /// The parent directory is canonicalized, so the returned value may be different from
-    /// the path passed to [`Trash::discard`].
+    /// On Linux and macOS, the parent directory is canonicalized.
+    ///
+    /// On Windows, this uses the original location recorded by the Shell.
+    /// Short 8.3 file names may be returned in their long form.
+    ///
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `/home/me/Downloads/file.txt`.
     ///
     /// On macOS:
     ///
     /// - For `/Users/me/Downloads/file.txt`, this returns `/Users/me/Downloads/file.txt`.
     /// - For `/var/folders/example/file.txt`, this returns `/private/var/folders/example/file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Desktop\file.txt`, this returns `C:\Users\me\Desktop\file.txt`.
+    /// - For `C:\Users\me\DOWNLO~1\file.txt`, this may return `C:\Users\me\Downloads\file.txt`.
     #[must_use]
     pub fn original_path(&self) -> PathBuf {
         self.original_parent.join(&self.original_name)
     }
 
     /// Returns the time at which the item was trashed.
+    ///
+    /// On Linux:
+    ///
+    /// - This is the timestamp written to the `.trashinfo` file.
+    ///
+    /// On macOS:
+    ///
+    /// - This is recorded after the system trash operation succeeds.
+    ///
+    /// On Windows:
+    ///
+    /// - This is recorded after the system recycle operation succeeds.
     #[must_use]
     pub fn discarded_at(&self) -> SystemTime {
         self.discarded_at
