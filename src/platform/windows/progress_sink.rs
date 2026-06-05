@@ -11,15 +11,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 use windows::Win32::{
-    Foundation::E_FAIL,
+    Foundation::{E_FAIL, PROPERTYKEY},
     System::Com,
     UI::Shell::{
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-        PropertiesSystem::{PID_DISPLACED_FROM, PSGUID_DISPLACED},
-        SHCreateItemFromParsingName, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
+        PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName, SIGDN,
+        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
     },
 };
-use windows_core::{HRESULT, PCWSTR, PROPERTYKEY, PWSTR, Ref, implement};
+use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
 
 use super::{path::ShellOsStrExt, sta_thread::ComApartment};
 use crate::{Error, Result};
