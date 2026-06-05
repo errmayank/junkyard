@@ -24,6 +24,9 @@ use sta_thread::{ComApartment, run_on_sta_thread};
 
 use crate::{Error, Result, Trash, TrashItem};
 
+const MAX_UNPREFIXED_SHELL_PATH_CODE_UNITS_WITH_NUL: usize = 260;
+const MAX_SHELL_FILE_NAME_CODE_UNITS: usize = 255;
+
 pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
     let path = path.to_path_buf();
 
@@ -289,8 +292,6 @@ fn nul_terminated_wide_path(path: &Path) -> Result<Vec<u16>> {
 }
 
 fn shell_path(path: &Path) -> Option<PathBuf> {
-    const LEGACY_PATH_CODE_UNIT_LIMIT_WITH_NUL: usize = 260;
-
     let mut components = path.components();
 
     let drive = match components.next()? {
@@ -320,7 +321,9 @@ fn shell_path(path: &Path) -> Option<PathBuf> {
         }
     }
 
-    if shell_path.as_os_str().encode_wide().count() + 1 > LEGACY_PATH_CODE_UNIT_LIMIT_WITH_NUL {
+    if shell_path.as_os_str().encode_wide().count() + 1
+        > MAX_UNPREFIXED_SHELL_PATH_CODE_UNITS_WITH_NUL
+    {
         return None;
     }
 
@@ -328,8 +331,6 @@ fn shell_path(path: &Path) -> Option<PathBuf> {
 }
 
 fn is_legacy_file_name(file_name: &OsStr) -> bool {
-    const LEGACY_FILE_NAME_CODE_UNIT_LIMIT: usize = 255;
-
     let Some(file_name_text) = file_name.to_str() else {
         return false;
     };
@@ -337,7 +338,7 @@ fn is_legacy_file_name(file_name: &OsStr) -> bool {
     if file_name_text.is_empty()
         || file_name_text.ends_with(' ')
         || file_name_text.ends_with('.')
-        || OsStr::new(file_name_text).encode_wide().count() > LEGACY_FILE_NAME_CODE_UNIT_LIMIT
+        || OsStr::new(file_name_text).encode_wide().count() > MAX_SHELL_FILE_NAME_CODE_UNITS
         || is_reserved_device_name(file_name_text)
     {
         return false;
@@ -367,4 +368,85 @@ fn is_reserved_device_name(file_name: &str) -> bool {
     RESERVED_NAMES
         .iter()
         .any(|reserved_name| stem.eq_ignore_ascii_case(reserved_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shell_path_converts_verbatim_disk_path() {
+        assert_eq!(
+            shell_path(Path::new(r"\\?\C:\foo\bar")).as_deref(),
+            Some(Path::new(r"C:\foo\bar"))
+        );
+        assert_eq!(
+            shell_path(Path::new(r"\\?\Z:\foo\bar")).as_deref(),
+            Some(Path::new(r"Z:\foo\bar"))
+        );
+        assert_eq!(
+            shell_path(Path::new(r"\\?\c:\foo")).as_deref(),
+            Some(Path::new(r"c:\foo"))
+        );
+        assert_eq!(
+            shell_path(Path::new(r"\\?\Z:\🧪\📦")).as_deref(),
+            Some(Path::new(r"Z:\🧪\📦"))
+        );
+    }
+
+    #[test]
+    fn test_shell_path_rejects_unsafe_verbatim_paths() {
+        for path in [
+            r"\\?\C:\foo\.\bar",
+            r"\\?\C:\foo\..\bar",
+            r"\\?\C:\foo/bar",
+            r"\\?\c\foo",
+            r"\\?\c:foo",
+            r"\\?\cc:foo",
+            r"\\?\c:foo\bar",
+            r"\\?\UNC\server\share\foo",
+            r"\\.\C:\notdisk",
+            r"\\?\GLOBALROOT\Device\ImDisk0\path\to\file.txt",
+        ] {
+            assert!(shell_path(Path::new(path)).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_shell_path_rejects_invalid_legacy_file_names() {
+        for path in [
+            r"\\?\C:\CON",
+            r"\\?\C:\COM1.txt",
+            r"\\?\C:\nul.tar.gz",
+            r"\\?\C:\file.",
+            r"\\?\C:\file ",
+            r"\\?\C:\foo\bad:name",
+            r#"\\?\C:\foo\bad"name"#,
+            r"\\?\C:\foo\bad<name",
+            r"\\?\C:\foo\bad>name",
+            r"\\?\C:\foo\bad|name",
+            r"\\?\C:\foo\bad?name",
+            r"\\?\C:\foo\bad*name",
+            "\\\\?\\C:\\foo\\bad\u{1f}name",
+        ] {
+            assert!(shell_path(Path::new(path)).is_none(), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_shell_path_checks_legacy_path_length_with_nul() {
+        let file_name = "m".repeat(MAX_SHELL_FILE_NAME_CODE_UNITS - 1);
+        let allowed_path = format!(r"\\?\C:\a\{file_name}");
+        let expected_path = format!(r"C:\a\{file_name}");
+
+        assert_eq!(
+            shell_path(Path::new(&allowed_path)).as_deref(),
+            Some(Path::new(&expected_path))
+        );
+
+        let too_long_file_name = "m".repeat(MAX_SHELL_FILE_NAME_CODE_UNITS);
+        let too_long_path = format!(r"\\?\C:\a\{too_long_file_name}");
+
+        assert!(shell_path(Path::new(&too_long_path)).is_none());
+    }
 }
