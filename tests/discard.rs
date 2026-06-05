@@ -219,3 +219,27 @@ fn test_discard_root_path() {
 
     assert!(matches!(result, Err(Error::TargetedRoot { .. })));
 }
+
+#[test]
+fn test_temp() {
+    let temp_dir = TempDir::new().unwrap();
+    let trash = Trash::new();
+    let file = temp_dir.path().join("temp.txt");
+
+    std::fs::write(&file, b"junk").unwrap();
+
+    let trashed_item = trash.discard(&file).unwrap();
+
+    eprintln!("Temporary trash item diagnostics:");
+    eprintln!("id debug: {:?}", trashed_item.id());
+    eprintln!("id lossy: {}", trashed_item.id().to_string_lossy());
+    eprintln!("original_name debug: {:?}", trashed_item.original_name());
+    eprintln!(
+        "original_parent debug: {:?}",
+        trashed_item.original_parent()
+    );
+    eprintln!("original_path debug: {:?}", trashed_item.original_path());
+    eprintln!("discarded_at debug: {:?}", trashed_item.discarded_at());
+
+    assert_eq!(trashed_item.id(), Path::new("temp").as_os_str());
+}
