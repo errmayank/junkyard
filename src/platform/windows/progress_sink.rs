@@ -12,15 +12,14 @@ use std::{
 };
 use windows::Win32::{
     Foundation::E_FAIL,
-    Storage::EnhancedStorage::{PID_DISPLACED_FROM, PSGUID_DISPLACED},
     System::Com,
     UI::Shell::{
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-        PropertiesSystem::PROPERTYKEY, SHCreateItemFromParsingName, SIGDN,
-        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
+        PropertiesSystem::{PID_DISPLACED_FROM, PSGUID_DISPLACED},
+        SHCreateItemFromParsingName, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
     },
 };
-use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
+use windows_core::{HRESULT, PCWSTR, PROPERTYKEY, PWSTR, Ref, implement};
 
 use super::{path::ShellOsStrExt, sta_thread::ComApartment};
 use crate::{Error, Result};
@@ -198,13 +197,12 @@ impl RecycleProgressSink {
 
         // SAFETY: `wide_item_id` is NUL-terminated and remains valid for the
         // duration of this call.
-        let shell_item: IShellItem =
+        let shell_item: IShellItem2 =
             unsafe { SHCreateItemFromParsingName(PCWSTR(wide_item_id.as_ptr()), None) }
                 .map_err(metadata_error)?;
         let original_name = ShellString::from_display_name(&shell_item, SIGDN_PARENTRELATIVE)
             .map_err(metadata_error)?
             .into_os_string();
-        let shell_item: IShellItem2 = shell_item.cast().map_err(metadata_error)?;
 
         let original_parent =
             ShellString::from_property_string(&shell_item, &ORIGINAL_LOCATION_PROPERTY_KEY)
