@@ -137,7 +137,7 @@ impl TrashItem {
     ///
     /// On Windows:
     ///
-    /// - This is recorded after the system recycle operation succeeds.
+    /// - This is the recycled item's `System.Recycle.DateDeleted` property.
     #[must_use]
     pub fn discarded_at(&self) -> SystemTime {
         self.discarded_at

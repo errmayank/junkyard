@@ -9,15 +9,16 @@ use std::{
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
 };
 use windows::Win32::{
-    Foundation::{E_FAIL, PROPERTYKEY},
+    Foundation::{E_FAIL, FILETIME, PROPERTYKEY},
     Storage::EnhancedStorage::PKEY_FileName,
     System::Com,
     UI::Shell::{
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-        PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName, SIGDN,
-        SIGDN_DESKTOPABSOLUTEPARSING,
+        PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName,
+        SIGDN, SIGDN_DESKTOPABSOLUTEPARSING,
     },
 };
 use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
@@ -29,6 +30,13 @@ const ORIGINAL_LOCATION_PROPERTY_KEY: PROPERTYKEY = PROPERTYKEY {
     fmtid: PSGUID_DISPLACED,
     pid: PID_DISPLACED_FROM,
 };
+const DELETION_DATE_PROPERTY_KEY: PROPERTYKEY = PROPERTYKEY {
+    fmtid: PSGUID_DISPLACED,
+    pid: PID_DISPLACED_DATE,
+};
+const FILE_TIME_TICKS_PER_SECOND: u64 = 10_000_000;
+const NANOSECONDS_PER_FILE_TIME_TICK: u64 = 100;
+const UNIX_EPOCH_FILE_TIME_TICKS: u64 = 116_444_736_000_000_000;
 
 #[derive(Debug)]
 struct ShellString(PWSTR);
@@ -84,6 +92,45 @@ impl Drop for ShellString {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FileTime(u64);
+
+impl FileTime {
+    const UNIX_EPOCH: Self = Self(UNIX_EPOCH_FILE_TIME_TICKS);
+
+    fn from_windows(file_time: FILETIME) -> Self {
+        Self((u64::from(file_time.dwHighDateTime) << 32) | u64::from(file_time.dwLowDateTime))
+    }
+
+    fn to_system_time(&self) -> windows_core::Result<SystemTime> {
+        let ticks_from_unix_epoch = self.0.abs_diff(Self::UNIX_EPOCH.0);
+        let seconds = ticks_from_unix_epoch / FILE_TIME_TICKS_PER_SECOND;
+        let nanoseconds = u32::try_from(
+            (ticks_from_unix_epoch % FILE_TIME_TICKS_PER_SECOND) * NANOSECONDS_PER_FILE_TIME_TICK,
+        )
+        .map_err(|source| {
+            windows_core::Error::new(
+                E_FAIL,
+                format!("Shell returned an invalid recycled item deletion date: {source}"),
+            )
+        })?;
+
+        let duration = Duration::new(seconds, nanoseconds);
+        let system_time = if self.0 >= Self::UNIX_EPOCH.0 {
+            SystemTime::UNIX_EPOCH.checked_add(duration)
+        } else {
+            SystemTime::UNIX_EPOCH.checked_sub(duration)
+        };
+
+        system_time.ok_or_else(|| {
+            windows_core::Error::new(
+                E_FAIL,
+                "Shell returned a recycled item deletion date outside the supported time range",
+            )
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 enum RecycleProgressState {
     #[default]
@@ -101,6 +148,7 @@ pub(super) struct RecycledItem {
     pub(super) id: OsString,
     pub(super) original_name: OsString,
     pub(super) original_parent: PathBuf,
+    pub(super) discarded_at: SystemTime,
 }
 
 fn record_progress_failure(
@@ -210,10 +258,19 @@ impl RecycleProgressSink {
                 .map_err(metadata_error)?
                 .into_os_string();
 
+        // SAFETY: `shell_item` remains valid for the duration of this call. The
+        // property key is static.
+        let deletion_date = unsafe { shell_item.GetFileTime(&DELETION_DATE_PROPERTY_KEY) }
+            .map_err(metadata_error)?;
+        let discarded_at = FileTime::from_windows(deletion_date)
+            .to_system_time()
+            .map_err(metadata_error)?;
+
         Ok(RecycledItem {
             id: item_id,
             original_name,
             original_parent: PathBuf::from(original_parent),
+            discarded_at,
         })
     }
 }

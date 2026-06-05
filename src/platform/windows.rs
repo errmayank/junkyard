@@ -7,7 +7,6 @@ use std::{
     marker::PhantomData,
     os::windows::ffi::OsStrExt,
     path::{Component, Path, PathBuf, Prefix},
-    time::SystemTime,
 };
 use windows::Win32::{
     System::Com::{self, CLSCTX_ALL},
@@ -67,7 +66,7 @@ fn discard_inner(com_apartment: &ComApartment, path: &Path) -> Result<TrashItem>
         recycled_item.id,
         recycled_item.original_name,
         recycled_item.original_parent,
-        SystemTime::now(),
+        recycled_item.discarded_at,
     ))
 }
 
