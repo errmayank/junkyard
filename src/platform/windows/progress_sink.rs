@@ -7,29 +7,37 @@
 use std::{
     ffi::OsString,
     os::windows::ffi::OsStringExt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use windows::Win32::{
     Foundation::E_FAIL,
+    Storage::EnhancedStorage::{PID_DISPLACED_FROM, PSGUID_DISPLACED},
     System::Com,
     UI::Shell::{
-        IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
-        SIGDN_DESKTOPABSOLUTEPARSING,
+        IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
+        PropertiesSystem::PROPERTYKEY, SHCreateItemFromParsingName, SIGDN,
+        SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
     },
 };
 use windows_core::{HRESULT, PCWSTR, PWSTR, Ref, implement};
 
+use super::{path::ShellOsStrExt, sta_thread::ComApartment};
 use crate::{Error, Result};
 
-#[derive(Debug)]
-struct ShellAllocatedString(PWSTR);
+const ORIGINAL_LOCATION_PROPERTY_KEY: PROPERTYKEY = PROPERTYKEY {
+    fmtid: PSGUID_DISPLACED,
+    pid: PID_DISPLACED_FROM,
+};
 
-impl ShellAllocatedString {
-    fn new(shell_item: &IShellItem) -> windows_core::Result<Self> {
+#[derive(Debug)]
+struct ShellString(PWSTR);
+
+impl ShellString {
+    fn from_display_name(shell_item: &IShellItem, kind: SIGDN) -> windows_core::Result<Self> {
         // SAFETY: `shell_item` remains valid for the duration of this call and the
-        // returned string pointer is released by `ShellAllocatedString::drop`.
-        let pointer = unsafe { shell_item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)? };
+        // returned string pointer is released by `ShellString::drop`.
+        let pointer = unsafe { shell_item.GetDisplayName(kind)? };
         if pointer.is_null() {
             return Err(windows_core::Error::new(
                 E_FAIL,
@@ -40,19 +48,36 @@ impl ShellAllocatedString {
         Ok(Self(pointer))
     }
 
+    fn from_property_string(
+        shell_item: &IShellItem2,
+        key: &PROPERTYKEY,
+    ) -> windows_core::Result<Self> {
+        // SAFETY: `shell_item` remains valid for the duration of this call and the
+        // returned string pointer is released by `ShellString::drop`.
+        let pointer = unsafe { shell_item.GetString(key)? };
+        if pointer.is_null() {
+            return Err(windows_core::Error::new(
+                E_FAIL,
+                "Shell returned a null string property for the recycled item",
+            ));
+        }
+
+        Ok(Self(pointer))
+    }
+
     fn into_os_string(self) -> OsString {
-        // SAFETY: `ShellAllocatedString` is constructed from a non-null
-        // `GetDisplayName` pointer, which is a NUL-terminated UTF-16 string.
+        // SAFETY: `ShellString` is constructed from a non-null
+        // Shell string pointer, which is a NUL-terminated UTF-16 string.
         let display_name_wide = unsafe { self.0.as_wide() };
 
         OsString::from_wide(display_name_wide)
     }
 }
 
-impl Drop for ShellAllocatedString {
+impl Drop for ShellString {
     fn drop(&mut self) {
-        // SAFETY: `ShellAllocatedString::new` stores the pointer returned by
-        // `GetDisplayName` and this is the only place that releases it.
+        // SAFETY: `ShellString` stores a Shell-allocated string pointer
+        // and this is the only place that releases it.
         unsafe {
             Com::CoTaskMemFree(Some(self.0.as_ptr().cast::<std::ffi::c_void>()));
         }
@@ -69,6 +94,13 @@ enum RecycleProgressState {
     Failed {
         message: String,
     },
+}
+
+#[derive(Debug)]
+pub(super) struct RecycledItem {
+    pub(super) id: OsString,
+    pub(super) original_name: OsString,
+    pub(super) original_parent: PathBuf,
 }
 
 fn record_progress_failure(
@@ -123,26 +155,67 @@ impl RecycleProgressSink {
         }
     }
 
-    pub(super) fn recycled_item_id(&self, path: &Path) -> Result<OsString> {
-        let state = self.state.lock().map_err(|source| Error::Platform {
-            message: format!(
-                "Recycle progress state was poisoned for {}: {source}",
-                path.display()
-            ),
-        })?;
-
-        match &*state {
-            RecycleProgressState::Pending => Err(Error::Platform {
+    pub(super) fn recycled_item(
+        &self,
+        _com_apartment: &ComApartment,
+        path: &Path,
+    ) -> Result<RecycledItem> {
+        let item_id = {
+            let state = self.state.lock().map_err(|source| Error::Platform {
                 message: format!(
-                    "Windows did not return a recycled shell item for {}",
+                    "Recycle progress state was poisoned for {}: {source}",
                     path.display()
                 ),
-            }),
-            RecycleProgressState::Recycled { item_id } => Ok(item_id.clone()),
-            RecycleProgressState::Failed { message } => Err(Error::Platform {
-                message: format!("Windows failed to recycle {}: {message}", path.display()),
-            }),
-        }
+            })?;
+
+            match &*state {
+                RecycleProgressState::Pending => Err(Error::Platform {
+                    message: format!(
+                        "Windows did not return a recycled shell item for {}",
+                        path.display()
+                    ),
+                }),
+                RecycleProgressState::Recycled { item_id } => Ok(item_id.clone()),
+                RecycleProgressState::Failed { message } => Err(Error::Platform {
+                    message: format!("Windows failed to recycle {}: {message}", path.display()),
+                }),
+            }?
+        };
+
+        let metadata_error = |source: windows_core::Error| Error::Platform {
+            message: format!(
+                "Failed to read Windows recycled item metadata for {}: {source}",
+                path.display()
+            ),
+        };
+
+        let wide_item_id = item_id.as_os_str().wide_path().map_err(|source| {
+            metadata_error(windows_core::Error::new(
+                E_FAIL,
+                format!("Shell returned an invalid recycled item id: {source}"),
+            ))
+        })?;
+
+        // SAFETY: `wide_item_id` is NUL-terminated and remains valid for the
+        // duration of this call.
+        let shell_item: IShellItem =
+            unsafe { SHCreateItemFromParsingName(PCWSTR(wide_item_id.as_ptr()), None) }
+                .map_err(metadata_error)?;
+        let original_name = ShellString::from_display_name(&shell_item, SIGDN_PARENTRELATIVE)
+            .map_err(metadata_error)?
+            .into_os_string();
+        let shell_item: IShellItem2 = shell_item.cast().map_err(metadata_error)?;
+
+        let original_parent =
+            ShellString::from_property_string(&shell_item, &ORIGINAL_LOCATION_PROPERTY_KEY)
+                .map_err(metadata_error)?
+                .into_os_string();
+
+        Ok(RecycledItem {
+            id: item_id,
+            original_name,
+            original_parent: PathBuf::from(original_parent),
+        })
     }
 }
 
@@ -171,17 +244,18 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
             return Err(windows_core::Error::new(E_FAIL, message));
         };
 
-        let recycled_id = match ShellAllocatedString::new(recycled_item) {
-            Ok(display_name) => display_name.into_os_string(),
-            Err(source) => {
-                record_progress_failure(
-                    &self.state,
-                    format!("Failed to read recycled shell item name: {source}"),
-                )?;
+        let recycled_id =
+            match ShellString::from_display_name(recycled_item, SIGDN_DESKTOPABSOLUTEPARSING) {
+                Ok(display_name) => display_name.into_os_string(),
+                Err(source) => {
+                    record_progress_failure(
+                        &self.state,
+                        format!("Failed to read recycled shell item name: {source}"),
+                    )?;
 
-                return Err(source);
-            }
-        };
+                    return Err(source);
+                }
+            };
 
         let mut state = self.state.lock().map_err(|source| {
             windows_core::Error::new(

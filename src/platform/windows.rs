@@ -1,9 +1,9 @@
+mod path;
 mod progress_sink;
 mod sta_thread;
 
 use std::{
     ffi::OsStr,
-    io,
     marker::PhantomData,
     os::windows::ffi::OsStrExt,
     path::{Component, Path, PathBuf, Prefix},
@@ -19,6 +19,7 @@ use windows::Win32::{
 };
 use windows_core::{GUID, PCWSTR};
 
+use path::ShellOsStrExt;
 use progress_sink::RecycleProgressSink;
 use sta_thread::{ComApartment, run_on_sta_thread};
 
@@ -45,18 +46,12 @@ pub(crate) fn discard_all(_: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>
 }
 
 fn discard_inner(com_apartment: &ComApartment, path: &Path) -> Result<TrashItem> {
-    let original_name = path
-        .file_name()
-        .ok_or_else(|| Error::TargetedRoot {
+    if path.file_name().is_none() {
+        return Err(Error::TargetedRoot {
             path: path.to_path_buf(),
-        })?
-        .to_os_string();
-    let original_parent = path
-        .parent()
-        .ok_or_else(|| Error::TargetedRoot {
-            path: path.to_path_buf(),
-        })?
-        .to_path_buf();
+        });
+    }
+
     let shell_item = shell_item_from_path(com_apartment, path)?;
     let progress_sink = RecycleProgressSink::new();
     let file_operation_progress_sink = progress_sink.to_file_operation_progress_sink();
@@ -66,12 +61,12 @@ fn discard_inner(com_apartment: &ComApartment, path: &Path) -> Result<TrashItem>
     operation.queue_delete_item(path, &shell_item, &file_operation_progress_sink)?;
     operation.perform_queued_operations(path, &progress_sink)?;
 
-    let recycled_id = progress_sink.recycled_item_id(path)?;
+    let recycled_item = progress_sink.recycled_item(com_apartment, path)?;
 
     Ok(TrashItem::new(
-        recycled_id,
-        original_name,
-        original_parent,
+        recycled_item.id,
+        recycled_item.original_name,
+        recycled_item.original_parent,
         SystemTime::now(),
     ))
 }
@@ -247,12 +242,23 @@ fn shell_item_from_path(_com_apartment: &ComApartment, path: &Path) -> Result<IS
     };
 
     if let Some(compatible_path) = shell_path(path) {
-        let compatible_wide_path = nul_terminated_wide_path(&compatible_path)?;
+        let compatible_wide_path =
+            compatible_path
+                .as_os_str()
+                .wide_path()
+                .map_err(|source| Error::Io {
+                    path: compatible_path.to_path_buf(),
+                    source,
+                })?;
 
         match create_item(&compatible_wide_path) {
             Ok(shell_item) => Ok(shell_item),
             Err(shell_path_error) => {
-                let original_wide_path = nul_terminated_wide_path(path)?;
+                let original_wide_path =
+                    path.as_os_str().wide_path().map_err(|source| Error::Io {
+                        path: path.to_path_buf(),
+                        source,
+                    })?;
 
                 create_item(&original_wide_path).map_err(|path_error| {
                     Error::Platform {
@@ -265,7 +271,10 @@ fn shell_item_from_path(_com_apartment: &ComApartment, path: &Path) -> Result<IS
             }
         }
     } else {
-        let original_wide_path = nul_terminated_wide_path(path)?;
+        let original_wide_path = path.as_os_str().wide_path().map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
         create_item(&original_wide_path).map_err(|path_error| Error::Platform {
             message: format!(
@@ -274,21 +283,6 @@ fn shell_item_from_path(_com_apartment: &ComApartment, path: &Path) -> Result<IS
             ),
         })
     }
-}
-
-fn nul_terminated_wide_path(path: &Path) -> Result<Vec<u16>> {
-    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
-
-    if wide_path.contains(&0) {
-        return Err(Error::Io {
-            path: path.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidInput, "path contains an interior NUL"),
-        });
-    }
-
-    wide_path.push(0);
-
-    Ok(wide_path)
 }
 
 fn shell_path(path: &Path) -> Option<PathBuf> {
