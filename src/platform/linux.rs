@@ -13,7 +13,7 @@ use std::{
     fs::OpenOptions,
     io::{self, Write},
     os::unix::{
-        ffi::{OsStrExt, OsStringExt},
+        ffi::OsStrExt,
         fs::{MetadataExt, PermissionsExt},
     },
     path::{Component, Path, PathBuf},
