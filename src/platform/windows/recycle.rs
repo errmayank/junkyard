@@ -14,17 +14,17 @@ use windows::Win32::{
     Foundation::{E_FAIL, PROPERTYKEY},
     Storage::EnhancedStorage::PKEY_FileName,
     UI::Shell::{
+        FOF_NO_CONNECTED_ELEMENTS, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING,
+        FOFX_ADDUNDORECORD, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, IFileOperation,
         IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-        PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName,
-        SIGDN_DESKTOPABSOLUTEPARSING,
+        PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED, SIGDN_DESKTOPABSOLUTEPARSING,
     },
 };
 use windows_core::{HRESULT, PCWSTR, Ref, implement};
 
 use super::{
-    apartment::ComApartment,
     path::ShellOsStrExt,
-    shell::{FileTime, ShellString},
+    shell::{FileTime, ShellContext, ShellString},
 };
 use crate::{Error, Result};
 
@@ -36,6 +36,154 @@ const DELETION_DATE_PROPERTY_KEY: PROPERTYKEY = PROPERTYKEY {
     fmtid: PSGUID_DISPLACED,
     pid: PID_DISPLACED_DATE,
 };
+
+#[derive(Debug)]
+pub(super) struct RecycleOperation {
+    operation: IFileOperation,
+}
+
+impl RecycleOperation {
+    pub(super) fn new(shell_context: &ShellContext, path: &Path) -> Result<Self> {
+        let operation = Self {
+            operation: shell_context.file_operation(path)?,
+        };
+
+        operation.set_recycle_flags(path)?;
+
+        Ok(operation)
+    }
+
+    fn set_recycle_flags(&self, path: &Path) -> Result<()> {
+        let operation_flags = FOFX_RECYCLEONDELETE
+            | FOFX_ADDUNDORECORD
+            | FOFX_EARLYFAILURE
+            | FOF_NOERRORUI
+            | FOF_NO_CONNECTED_ELEMENTS
+            | FOF_SILENT
+            | FOF_WANTNUKEWARNING;
+
+        // SAFETY: `self.operation` comes from a successful `CoCreateInstance` call.
+        // `SetOperationFlags` only reads the interface pointer for this call.
+        unsafe { self.operation.SetOperationFlags(operation_flags) }.map_err(|source| {
+            Error::Platform {
+                message: format!(
+                    "Failed to configure Windows recycle operation for {}: {source}",
+                    path.display()
+                ),
+            }
+        })
+    }
+
+    pub(super) fn queue_delete(
+        &self,
+        path: &Path,
+        shell_item: &IShellItem,
+        progress_sink: &IFileOperationProgressSink,
+    ) -> Result<()> {
+        // SAFETY: `self.operation` and `shell_item` are valid COM interfaces.
+        // `progress_sink` remains alive for the duration of the queued operation.
+        unsafe { self.operation.DeleteItem(shell_item, progress_sink) }.map_err(|source| {
+            Error::Platform {
+                message: format!(
+                    "Failed to queue Windows recycle operation for {}: {source}",
+                    path.display()
+                ),
+            }
+        })
+    }
+
+    pub(super) fn execute(&self, path: &Path, progress_sink: &RecycleProgressSink) -> Result<()> {
+        // SAFETY: `self.operation` comes from a successful `CoCreateInstance` call.
+        // The queued item and progress sink remain alive for the duration of this call.
+        let operation_result = unsafe { self.operation.PerformOperations() };
+
+        // SAFETY: `self.operation` comes from a successful `CoCreateInstance` call.
+        // It remains valid after `PerformOperations` returns.
+        let operation_aborted = unsafe { self.operation.GetAnyOperationsAborted() }
+            .map(windows_core::BOOL::as_bool)
+            .map_err(|source| Error::Platform {
+                message: format!(
+                    "Failed to inspect Windows recycle operation for {}: {source}",
+                    path.display()
+                ),
+            });
+        let operation_aborted = match operation_aborted {
+            Ok(operation_aborted) => operation_aborted,
+            Err(inspect_error) => match operation_result {
+                Ok(()) => return Err(inspect_error),
+                Err(source) => {
+                    if let Some(message) = progress_sink.failure_message().map_err(
+                        |progress_error| Error::Platform {
+                            message: format!(
+                                "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
+                                path.display()
+                            ),
+                        },
+                    )?
+                    {
+                        return Err(Error::Platform {
+                            message: format!(
+                                "Failed to perform Windows recycle operation for {}: {message}; failed to inspect aborted state: {inspect_error}",
+                                path.display()
+                            ),
+                        });
+                    }
+
+                    return Err(Error::Platform {
+                        message: format!(
+                            "Failed to perform Windows recycle operation for {}: {source}; failed to inspect aborted state: {inspect_error}",
+                            path.display()
+                        ),
+                    });
+                }
+            },
+        };
+
+        match operation_result {
+            Ok(()) if operation_aborted => Err(Error::Platform {
+                message: format!(
+                    "Windows recycle operation was aborted for {}",
+                    path.display()
+                ),
+            }),
+            Ok(()) => Ok(()),
+            Err(source) => {
+                if let Some(message) = progress_sink.failure_message().map_err(
+                    |progress_error| Error::Platform {
+                        message: format!(
+                            "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
+                            path.display()
+                        ),
+                    },
+                )?
+                {
+                    return Err(Error::Platform {
+                        message: format!(
+                            "Failed to perform Windows recycle operation for {}: {message}",
+                            path.display()
+                        ),
+                    });
+                }
+
+                if operation_aborted {
+                    return Err(Error::Platform {
+                        message: format!(
+                            "Windows recycle operation was aborted for {}: {source}",
+                            path.display()
+                        ),
+                    });
+                }
+
+                Err(Error::Platform {
+                    message: format!(
+                        "Failed to perform Windows recycle operation for {}: {source}",
+                        path.display()
+                    ),
+                })
+            }
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 enum RecycleProgressState {
@@ -108,19 +256,24 @@ impl RecycleProgressSink {
             _ => Ok(None),
         }
     }
+}
 
-    pub(super) fn recycled_item(
-        &self,
-        _com_apartment: &ComApartment,
+impl RecycledItem {
+    pub(super) fn from_progress(
+        shell_context: &ShellContext,
+        progress_sink: &RecycleProgressSink,
         path: &Path,
-    ) -> Result<RecycledItem> {
+    ) -> Result<Self> {
         let item_id = {
-            let state = self.state.lock().map_err(|source| Error::Platform {
-                message: format!(
-                    "Recycle progress state was poisoned for {}: {source}",
-                    path.display()
-                ),
-            })?;
+            let state = progress_sink
+                .state
+                .lock()
+                .map_err(|source| Error::Platform {
+                    message: format!(
+                        "Recycle progress state was poisoned for {}: {source}",
+                        path.display()
+                    ),
+                })?;
 
             match &*state {
                 RecycleProgressState::Pending => Err(Error::Platform {
@@ -150,11 +303,9 @@ impl RecycleProgressSink {
             ))
         })?;
 
-        // SAFETY: `wide_item_id` is NUL-terminated and remains valid for the
-        // duration of this call.
-        let shell_item: IShellItem2 =
-            unsafe { SHCreateItemFromParsingName(PCWSTR(wide_item_id.as_ptr()), None) }
-                .map_err(metadata_error)?;
+        let shell_item = shell_context
+            .item_from_wide_path::<IShellItem2>(&wide_item_id)
+            .map_err(metadata_error)?;
         let original_name = ShellString::from_property_string(&shell_item, &PKEY_FileName)
             .map_err(metadata_error)?
             .into_os_string();
