@@ -965,7 +965,7 @@ mod tests {
     use super::*;
 
     use indoc::indoc;
-    use std::os::unix::{self, fs::MetadataExt};
+    use std::os::unix::{self, ffi::OsStringExt, fs::MetadataExt};
     use tempfile::TempDir;
 
     use mount::MountInfo;
