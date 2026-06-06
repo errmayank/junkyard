@@ -78,21 +78,19 @@ impl RecycleOperation {
         &self,
         path: &Path,
         shell_item: &IShellItem,
-        progress_sink: &IFileOperationProgressSink,
+        sink: &IFileOperationProgressSink,
     ) -> Result<()> {
         // SAFETY: `self.operation` and `shell_item` are valid COM interfaces.
-        // `progress_sink` remains alive for the duration of the queued operation.
-        unsafe { self.operation.DeleteItem(shell_item, progress_sink) }.map_err(|source| {
-            Error::Platform {
-                message: format!(
-                    "Failed to queue Windows recycle operation for {}: {source}",
-                    path.display()
-                ),
-            }
+        // `sink` remains alive for the duration of the queued operation.
+        unsafe { self.operation.DeleteItem(shell_item, sink) }.map_err(|source| Error::Platform {
+            message: format!(
+                "Failed to queue Windows recycle operation for {}: {source}",
+                path.display()
+            ),
         })
     }
 
-    pub(super) fn execute(&self, path: &Path, progress_sink: &RecycleProgressSink) -> Result<()> {
+    pub(super) fn execute(&self, path: &Path, sink: &RecycleProgressSink) -> Result<()> {
         // SAFETY: `self.operation` comes from a successful `CoCreateInstance` call.
         // The queued item and progress sink remain alive for the duration of this call.
         let operation_result = unsafe { self.operation.PerformOperations() };
@@ -112,7 +110,7 @@ impl RecycleOperation {
             Err(inspect_error) => match operation_result {
                 Ok(()) => return Err(inspect_error),
                 Err(source) => {
-                    if let Some(message) = progress_sink.failure_message().map_err(
+                    if let RecycleProgressState::Failed { message } = sink.status().map_err(
                         |progress_error| Error::Platform {
                             message: format!(
                                 "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
@@ -148,7 +146,7 @@ impl RecycleOperation {
             }),
             Ok(()) => Ok(()),
             Err(source) => {
-                if let Some(message) = progress_sink.failure_message().map_err(
+                if let RecycleProgressState::Failed { message } = sink.status().map_err(
                     |progress_error| Error::Platform {
                         message: format!(
                             "Failed to perform Windows recycle operation for {}; recycle progress state was poisoned: {progress_error}; operation error: {source}",
@@ -185,7 +183,7 @@ impl RecycleOperation {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 enum RecycleProgressState {
     #[default]
     Pending,
@@ -197,6 +195,52 @@ enum RecycleProgressState {
     },
 }
 
+#[derive(Clone, Debug, Default)]
+struct RecycleProgress(Arc<Mutex<RecycleProgressState>>);
+
+impl RecycleProgress {
+    fn status(&self) -> windows_core::Result<RecycleProgressState> {
+        let state = self.0.lock().map_err(|source| {
+            windows_core::Error::new(
+                E_FAIL,
+                format!("Recycle progress state was poisoned while reading status: {source}"),
+            )
+        })?;
+
+        Ok(state.clone())
+    }
+
+    fn record_recycled(&self, item_id: OsString) -> windows_core::Result<()> {
+        let mut state = self.0.lock().map_err(|source| {
+            windows_core::Error::new(
+                E_FAIL,
+                format!(
+                    "Recycle progress state was poisoned while recording recycled item: {source}"
+                ),
+            )
+        })?;
+
+        *state = RecycleProgressState::Recycled { item_id };
+
+        Ok(())
+    }
+
+    fn record_failed(&self, failure: impl Into<String>) -> windows_core::Result<()> {
+        let mut state = self.0.lock().map_err(|source| {
+            windows_core::Error::new(
+                E_FAIL,
+                format!("Recycle progress state was poisoned while recording failure: {source}"),
+            )
+        })?;
+
+        *state = RecycleProgressState::Failed {
+            message: failure.into(),
+        };
+
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct RecycledItem {
     pub(super) id: OsString,
@@ -205,90 +249,33 @@ pub(super) struct RecycledItem {
     pub(super) discarded_at: SystemTime,
 }
 
-fn record_progress_failure(
-    state: &Arc<Mutex<RecycleProgressState>>,
-    failure: impl Into<String>,
-) -> windows_core::Result<()> {
-    let mut state = state.lock().map_err(|source| {
-        windows_core::Error::new(
-            E_FAIL,
-            format!("Recycle progress state was poisoned while recording failure: {source}"),
-        )
-    })?;
-
-    *state = RecycleProgressState::Failed {
-        message: failure.into(),
-    };
-
-    Ok(())
-}
-
-#[implement(IFileOperationProgressSink)]
-#[derive(Debug)]
-pub(super) struct RecycleProgressSink {
-    state: Arc<Mutex<RecycleProgressState>>,
-}
-
-impl RecycleProgressSink {
-    pub(super) fn new() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(RecycleProgressState::default())),
-        }
-    }
-
-    pub(super) fn to_file_operation_progress_sink(&self) -> IFileOperationProgressSink {
-        Self {
-            state: Arc::clone(&self.state),
-        }
-        .into()
-    }
-
-    pub(super) fn failure_message(&self) -> windows_core::Result<Option<String>> {
-        let state = self.state.lock().map_err(|source| {
-            windows_core::Error::new(
-                E_FAIL,
-                format!("Recycle progress state was poisoned while reading failure: {source}"),
-            )
-        })?;
-
-        match &*state {
-            RecycleProgressState::Failed { message } => Ok(Some(message.clone())),
-            _ => Ok(None),
-        }
-    }
-}
-
 impl RecycledItem {
     pub(super) fn from_progress(
         shell_context: &ShellContext,
-        progress_sink: &RecycleProgressSink,
+        sink: &RecycleProgressSink,
         path: &Path,
     ) -> Result<Self> {
-        let item_id = {
-            let state = progress_sink
-                .state
-                .lock()
-                .map_err(|source| Error::Platform {
-                    message: format!(
-                        "Recycle progress state was poisoned for {}: {source}",
-                        path.display()
-                    ),
-                })?;
-
-            match &*state {
-                RecycleProgressState::Pending => Err(Error::Platform {
+        let item_id = match sink.status().map_err(|source| Error::Platform {
+            message: format!(
+                "Failed to read Windows recycle progress status for {}: {source}",
+                path.display()
+            ),
+        })? {
+            RecycleProgressState::Pending => {
+                return Err(Error::Platform {
                     message: format!(
                         "Windows did not return a recycled shell item for {}",
                         path.display()
                     ),
-                }),
-                RecycleProgressState::Recycled { item_id } => Ok(item_id.clone()),
-                RecycleProgressState::Failed { message } => Err(Error::Platform {
+                });
+            }
+            RecycleProgressState::Recycled { item_id } => item_id,
+            RecycleProgressState::Failed { message } => {
+                return Err(Error::Platform {
                     message: format!("Windows failed to recycle {}: {message}", path.display()),
-                }),
-            }?
+                });
+            }
         };
-
         let metadata_error = |source: windows_core::Error| Error::Platform {
             message: format!(
                 "Failed to read Windows recycled item metadata for {}: {source}",
@@ -332,6 +319,31 @@ impl RecycledItem {
     }
 }
 
+#[implement(IFileOperationProgressSink)]
+#[derive(Debug)]
+pub(super) struct RecycleProgressSink {
+    progress: RecycleProgress,
+}
+
+impl RecycleProgressSink {
+    pub(super) fn new() -> Self {
+        Self {
+            progress: RecycleProgress::default(),
+        }
+    }
+
+    pub(super) fn to_file_operation_sink(&self) -> IFileOperationProgressSink {
+        Self {
+            progress: self.progress.clone(),
+        }
+        .into()
+    }
+
+    fn status(&self) -> windows_core::Result<RecycleProgressState> {
+        self.progress.status()
+    }
+}
+
 impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
     fn PostDeleteItem(
         &self,
@@ -342,17 +354,15 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
     ) -> windows_core::Result<()> {
         if delete_result.is_err() {
             let source = windows_core::Error::from(delete_result);
-            record_progress_failure(
-                &self.state,
-                format!("Shell delete operation failed: {source}"),
-            )?;
+            self.progress
+                .record_failed(format!("Shell delete operation failed: {source}"))?;
 
             return Err(source);
         }
 
         let Some(recycled_item) = recycled_item.as_ref() else {
             let message = "Shell permanently deleted the item instead of recycling it";
-            record_progress_failure(&self.state, message)?;
+            self.progress.record_failed(message)?;
 
             return Err(windows_core::Error::new(E_FAIL, message));
         };
@@ -361,27 +371,15 @@ impl IFileOperationProgressSink_Impl for RecycleProgressSink_Impl {
             match ShellString::from_display_name(recycled_item, SIGDN_DESKTOPABSOLUTEPARSING) {
                 Ok(display_name) => display_name.into_os_string(),
                 Err(source) => {
-                    record_progress_failure(
-                        &self.state,
-                        format!("Failed to read recycled shell item name: {source}"),
-                    )?;
+                    self.progress.record_failed(format!(
+                        "Failed to read recycled shell item name: {source}"
+                    ))?;
 
                     return Err(source);
                 }
             };
 
-        let mut state = self.state.lock().map_err(|source| {
-            windows_core::Error::new(
-                E_FAIL,
-                format!(
-                    "Recycle progress state was poisoned while recording recycled item: {source}"
-                ),
-            )
-        })?;
-
-        *state = RecycleProgressState::Recycled {
-            item_id: recycled_id,
-        };
+        self.progress.record_recycled(recycled_id)?;
 
         Ok(())
     }

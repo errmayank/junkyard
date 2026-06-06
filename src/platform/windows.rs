@@ -34,14 +34,14 @@ fn discard_inner(shell_context: &ShellContext, path: &Path) -> Result<TrashItem>
     }
 
     let shell_item = shell_context.item_from_path(path)?;
-    let progress_sink = RecycleProgressSink::new();
-    let file_operation_progress_sink = progress_sink.to_file_operation_progress_sink();
+    let sink = RecycleProgressSink::new();
+    let file_operation_sink = sink.to_file_operation_sink();
     let operation = RecycleOperation::new(shell_context, path)?;
 
-    operation.queue_delete(path, &shell_item, &file_operation_progress_sink)?;
-    operation.execute(path, &progress_sink)?;
+    operation.queue_delete(path, &shell_item, &file_operation_sink)?;
+    operation.execute(path, &sink)?;
 
-    let recycled_item = RecycledItem::from_progress(shell_context, &progress_sink, path)?;
+    let recycled_item = RecycledItem::from_progress(shell_context, &sink, path)?;
 
     Ok(TrashItem::new(
         recycled_item.id,
