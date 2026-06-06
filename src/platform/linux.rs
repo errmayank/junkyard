@@ -1,4 +1,5 @@
 mod mount;
+mod payload;
 
 use indoc::formatdoc;
 use rustix::{
@@ -22,6 +23,7 @@ use std::{
 use time::OffsetDateTime;
 
 use mount::{MountPoint, Mounts};
+use payload::PayloadKind;
 
 use crate::{Error, Result, Trash, TrashItem};
 
@@ -47,10 +49,10 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
 
     loop {
         let entry = create_trash_info(location, &trash_dir, path, discarded_at)?;
-        let moved_payload = match move_to_trash(path, &entry.file) {
+        let moved_payload = match payload::move_to_trash(path, &entry.file) {
             Ok(moved_payload) => moved_payload,
             Err(error) => {
-                remove_file_if_exists(&entry.info)?;
+                payload::remove_file_if_exists(&entry.info)?;
 
                 if matches!(
                     &error,
@@ -89,80 +91,6 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
             original_parent,
             SystemTime::from(discarded_at),
         ));
-    }
-}
-
-fn move_to_trash(path: &Path, trash_path: &Path) -> Result<PayloadKind> {
-    let file_type = path
-        .symlink_metadata()
-        .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .file_type();
-    let payload_kind = if file_type.is_dir() {
-        PayloadKind::Directory
-    } else {
-        PayloadKind::File
-    };
-
-    create_trash_placeholder(trash_path, payload_kind)?;
-
-    match std::fs::rename(path, trash_path) {
-        Ok(()) => Ok(payload_kind),
-        Err(source) => {
-            remove_trash_placeholder(trash_path, payload_kind)?;
-
-            Err(Error::Io {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
-    }
-}
-
-fn create_trash_placeholder(path: &Path, payload_kind: PayloadKind) -> Result<()> {
-    match payload_kind {
-        PayloadKind::File => OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map(drop)
-            .map_err(|source| Error::Io {
-                path: path.to_path_buf(),
-                source,
-            }),
-        PayloadKind::Directory => std::fs::create_dir(path).map_err(|source| Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-fn remove_trash_placeholder(path: &Path, payload_kind: PayloadKind) -> Result<()> {
-    let result = match payload_kind {
-        PayloadKind::File => std::fs::remove_file(path),
-        PayloadKind::Directory => std::fs::remove_dir(path),
-    };
-
-    match result {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
     }
 }
 
@@ -221,12 +149,6 @@ fn ensure_discard_permission(path: &Path) -> Result<()> {
             "sticky parent directory prevents deleting path",
         ),
     })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PayloadKind {
-    File,
-    Directory,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -814,7 +736,7 @@ fn write_directory_size_cache(cache_path: &Path, contents: &str) -> Result<()> {
 
         if let Err(source) = file.write_all(contents.as_bytes()) {
             let write_path = temporary_file.clone();
-            remove_file_if_exists(&temporary_file)?;
+            payload::remove_file_if_exists(&temporary_file)?;
 
             return Err(Error::Io {
                 path: write_path,
@@ -826,7 +748,7 @@ fn write_directory_size_cache(cache_path: &Path, contents: &str) -> Result<()> {
 
         if let Err(source) = std::fs::rename(&temporary_file, cache_path) {
             let rename_path = cache_path.to_owned();
-            remove_file_if_exists(&temporary_file)?;
+            payload::remove_file_if_exists(&temporary_file)?;
 
             return Err(Error::Io {
                 path: rename_path,
