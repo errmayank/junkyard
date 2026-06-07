@@ -7,15 +7,15 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{Error, Result, Trash, TrashItem, discard::DiscardTarget};
+use crate::{Error, Result, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
+pub(crate) fn discard(target: &DiscardTarget) -> Result<TrashItem> {
     let file_manager = NSFileManager::defaultManager();
 
     discard_inner(&file_manager, target)
 }
 
-pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     let file_manager = NSFileManager::defaultManager();
 
     targets

@@ -5,15 +5,15 @@ mod shell;
 use recycle::{RecycleOperation, RecycleProgressSink, RecycledItem};
 use shell::{ShellContext, with_shell_context};
 
-use crate::{Result, Trash, TrashItem, discard::DiscardTarget};
+use crate::{Result, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
+pub(crate) fn discard(target: &DiscardTarget) -> Result<TrashItem> {
     let target = target.clone();
 
     with_shell_context(move |shell_context| discard_inner(shell_context, &target))
 }
 
-pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     let targets = targets.to_vec();
 
     with_shell_context(move |shell_context| {

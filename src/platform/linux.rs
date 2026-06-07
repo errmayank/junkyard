@@ -12,15 +12,15 @@ use directory_size::DirectorySizeCache;
 use location::TrashLocation;
 use payload::PayloadKind;
 
-use crate::{Error, Result, Trash, TrashItem, discard::DiscardTarget};
+use crate::{Error, Result, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
+pub(crate) fn discard(target: &DiscardTarget) -> Result<TrashItem> {
     let location = TrashLocation::resolve(&target.path)?;
 
     discard_inner(&location, target)
 }
 
-pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     targets
         .iter()
         .map(|target| {

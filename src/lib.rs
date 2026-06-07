@@ -168,7 +168,7 @@ impl Trash {
     {
         let target = discard::resolve_target(path.as_ref())?;
 
-        platform::discard(self, &target)
+        platform::discard(&target)
     }
 
     /// Moves multiple paths to the system trash.
@@ -194,6 +194,6 @@ impl Trash {
             .map(|path| discard::resolve_target(path.as_ref()))
             .collect::<Result<Vec<_>>>()?;
 
-        platform::discard_all(self, &targets)
+        platform::discard_all(&targets)
     }
 }
