@@ -8,9 +8,8 @@ use std::{
 };
 
 use super::{
-    OWNER_RWX_MODE,
     mount::{MountPoint, Mounts},
-    permission,
+    permission::{self, OWNER_RWX_MODE},
 };
 use crate::{Error, Result};
 

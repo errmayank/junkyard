@@ -11,10 +11,10 @@ use std::{
 use crate::{Error, Result};
 
 pub(super) const STICKY_BIT: u32 = 0o1000;
+pub(super) const OWNER_RWX_MODE: u32 = 0o700;
+
 #[cfg(test)]
 pub(super) const OWNER_RX_MODE: u32 = 0o500;
-#[cfg(test)]
-pub(super) const OWNER_RWX_MODE: u32 = 0o700;
 #[cfg(test)]
 pub(super) const OWNER_RWX_WORLD_RX_MODE: u32 = 0o755;
 #[cfg(test)]
