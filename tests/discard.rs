@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix;
 use std::path::Path;
 #[cfg(target_os = "windows")]
@@ -59,10 +59,10 @@ fn test_discard_file() {
 
     std::fs::write(&file, b"junk").unwrap();
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let expected_path = file.canonicalize().unwrap();
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&file).unwrap();
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let expected_path = file.canonicalize().unwrap();
 
     let trashed_item = trash.discard(&file).unwrap();
 
@@ -75,19 +75,18 @@ fn test_discard_file() {
 fn test_discard_file_name_with_special_chars() {
     let temp_dir = TempDir::new().unwrap();
     let trash = Trash::new();
-    let file_name = if cfg!(target_os = "windows") {
-        "percent% plus+ comma, café 日本語.txt"
-    } else {
-        r#"quote" percent% plus+ comma, backslash\ café 日本語.txt"#
-    };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let file_name = r#"quote" percent% plus+ comma, backslash\ café 日本語.txt"#;
+    #[cfg(target_os = "windows")]
+    let file_name = "percent% plus+ comma, café 日本語.txt";
     let file = temp_dir.path().join(file_name);
 
     std::fs::write(&file, b"junk").unwrap();
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let expected_path = file.canonicalize().unwrap();
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&file).unwrap();
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let expected_path = file.canonicalize().unwrap();
 
     let trashed_item = trash.discard(&file).unwrap();
 
@@ -120,7 +119,7 @@ fn test_discard_files_with_same_name() {
     assert!(!second.exists());
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn test_discard_file_with_parent_symlink() {
     let temp_dir = TempDir::new().unwrap();
@@ -147,7 +146,7 @@ fn test_discard_file_with_parent_symlink() {
     assert!(file.exists());
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn test_discard_broken_symlink() {
     let temp_dir = TempDir::new().unwrap();
@@ -184,10 +183,10 @@ fn test_discard_directory() {
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(file, b"junk").unwrap();
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let expected_path = dir.canonicalize().unwrap();
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&dir).unwrap();
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let expected_path = dir.canonicalize().unwrap();
 
     let trashed_item = trash.discard(&dir).unwrap();
 
