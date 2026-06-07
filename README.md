@@ -1,3 +1,48 @@
 # Junkyard
 
-Work in progress.
+Cross-platform system trash API.
+
+## Usage
+
+### Discard
+
+Move a single path to the trash:
+
+```rust
+use junkyard::Trash;
+
+std::fs::write("file.txt", b"junk")?;
+
+let trash = Trash::new();
+let item = trash.discard("file.txt")?;
+
+assert_eq!(item.original_name(), "file.txt");
+assert!(!std::fs::exists("file.txt")?);
+```
+
+Move multiple paths at once:
+
+```rust
+use junkyard::Trash;
+
+std::fs::write("first.txt", b"first")?;
+std::fs::create_dir("directory")?;
+std::fs::write("directory/second.txt", b"second")?;
+
+let trash = Trash::new();
+let items = trash.discard_all(["first.txt", "directory"])?;
+
+assert_eq!(items.len(), 2);
+assert_eq!(items[0].original_name(), "first.txt");
+assert_eq!(items[1].original_name(), "directory");
+```
+
+All paths are resolved before any item is moved to the trash. If resolution fails, no items are moved. Once trashing begins, paths are processed in input order. If a later operation fails, earlier items may already be in the trash.
+
+Symbolic links are moved as links; their targets are left in place.
+
+## Notes
+
+- Linux: Follows the Freedesktop trash specification.
+- macOS: Uses `NSFileManager`.
+- Windows: Uses the Shell Recycle Bin APIs.
