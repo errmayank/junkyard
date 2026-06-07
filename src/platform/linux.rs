@@ -32,7 +32,9 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
     permission::ensure_discard_permission(path)?;
 
     let trash_dir = location.prepare()?;
-    let discarded_at = current_local_time()?;
+    let discarded_at = OffsetDateTime::now_local().map_err(|source| Error::Platform {
+        message: format!("Failed to get local time: {source}"),
+    })?;
 
     loop {
         let entry = trash_info::reserve_entry(location, &trash_dir, path, discarded_at)?;
@@ -80,12 +82,6 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
             SystemTime::from(discarded_at),
         ));
     }
-}
-
-fn current_local_time() -> Result<OffsetDateTime> {
-    OffsetDateTime::now_local().map_err(|source| Error::Platform {
-        message: format!("Failed to get local time: {source}"),
-    })
 }
 
 #[cfg(test)]
