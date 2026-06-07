@@ -437,6 +437,16 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_path_does_not_convert_verbatim_volume_guid_path() {
+        assert!(
+            shell_path(Path::new(
+                r"\\?\Volume{11111111-1111-1111-1111-111111111111}\foo\bar"
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
     fn test_file_time_from_windows() {
         let file_time = FileTime::from_windows(FILETIME {
             dwLowDateTime: 0x89ab_cdef,
