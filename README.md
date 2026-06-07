@@ -9,12 +9,11 @@ Cross-platform system trash API.
 Move a single path to the trash:
 
 ```rust
-use junkyard::Trash;
+use junkyard::discard;
 
 std::fs::write("file.txt", b"junk")?;
 
-let trash = Trash::new();
-let item = trash.discard("file.txt")?;
+let item = discard("file.txt")?;
 
 assert_eq!(item.original_name(), "file.txt");
 assert!(!std::fs::exists("file.txt")?);
@@ -23,14 +22,13 @@ assert!(!std::fs::exists("file.txt")?);
 Move multiple paths at once:
 
 ```rust
-use junkyard::Trash;
+use junkyard::discard_all;
 
 std::fs::write("first.txt", b"first")?;
 std::fs::create_dir("directory")?;
 std::fs::write("directory/second.txt", b"second")?;
 
-let trash = Trash::new();
-let items = trash.discard_all(["first.txt", "directory"])?;
+let items = discard_all(["first.txt", "directory"])?;
 
 assert_eq!(items.len(), 2);
 assert_eq!(items[0].original_name(), "first.txt");

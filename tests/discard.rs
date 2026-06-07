@@ -2,12 +2,11 @@
 use std::os::unix;
 use std::path::Path;
 #[cfg(target_os = "windows")]
-use std::path::PathBuf;
-#[cfg(target_os = "windows")]
 use std::{
     ffi::OsString,
     io,
     os::windows::ffi::{OsStrExt, OsStringExt},
+    path::PathBuf,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Storage::FileSystem::GetLongPathNameW;
@@ -16,7 +15,7 @@ use windows_core::PCWSTR;
 
 use tempfile::TempDir;
 
-use junkyard::{Error, Trash};
+use junkyard::{Error, discard, discard_all};
 
 #[cfg(target_os = "windows")]
 fn to_long_path(path: &Path) -> io::Result<PathBuf> {
@@ -54,7 +53,6 @@ fn to_long_path(path: &Path) -> io::Result<PathBuf> {
 #[test]
 fn test_discard_file() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let file = temp_dir.path().join("file.txt");
 
     std::fs::write(&file, b"junk").unwrap();
@@ -64,7 +62,7 @@ fn test_discard_file() {
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&file).unwrap();
 
-    let trashed_item = trash.discard(&file).unwrap();
+    let trashed_item = discard(&file).unwrap();
 
     assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
     assert_eq!(trashed_item.original_path(), expected_path);
@@ -74,11 +72,12 @@ fn test_discard_file() {
 #[test]
 fn test_discard_file_name_with_special_chars() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let file_name = r#"quote" percent% plus+ comma, backslash\ café 日本語.txt"#;
     #[cfg(target_os = "windows")]
     let file_name = "percent% plus+ comma, café 日本語.txt";
+
     let file = temp_dir.path().join(file_name);
 
     std::fs::write(&file, b"junk").unwrap();
@@ -88,7 +87,7 @@ fn test_discard_file_name_with_special_chars() {
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&file).unwrap();
 
-    let trashed_item = trash.discard(&file).unwrap();
+    let trashed_item = discard(&file).unwrap();
 
     assert_eq!(trashed_item.original_name(), file.file_name().unwrap());
     assert_eq!(trashed_item.original_path(), expected_path);
@@ -98,7 +97,6 @@ fn test_discard_file_name_with_special_chars() {
 #[test]
 fn test_discard_files_with_same_name() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let first_dir = temp_dir.path().join("first");
     let second_dir = temp_dir.path().join("second");
     let first = first_dir.join("file.txt");
@@ -109,8 +107,8 @@ fn test_discard_files_with_same_name() {
     std::fs::write(&first, b"first").unwrap();
     std::fs::write(&second, b"second").unwrap();
 
-    let first_item = trash.discard(&first).unwrap();
-    let second_item = trash.discard(&second).unwrap();
+    let first_item = discard(&first).unwrap();
+    let second_item = discard(&second).unwrap();
 
     assert_eq!(first_item.original_name(), first.file_name().unwrap());
     assert_eq!(second_item.original_name(), second.file_name().unwrap());
@@ -123,7 +121,6 @@ fn test_discard_files_with_same_name() {
 #[test]
 fn test_discard_file_with_parent_symlink() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let dir = temp_dir.path().join("directory");
     let dir_link = temp_dir.path().join("directory-link");
     let file = temp_dir.path().join("file.txt");
@@ -135,7 +132,7 @@ fn test_discard_file_with_parent_symlink() {
     unix::fs::symlink(&file, &file_link).unwrap();
 
     let expected_parent = dir.canonicalize().unwrap();
-    let trashed_item = trash.discard(dir_link.join("file-link.txt")).unwrap();
+    let trashed_item = discard(dir_link.join("file-link.txt")).unwrap();
 
     assert_eq!(trashed_item.original_parent(), expected_parent);
     assert_eq!(
@@ -150,13 +147,12 @@ fn test_discard_file_with_parent_symlink() {
 #[test]
 fn test_discard_broken_symlink() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let missing_target = temp_dir.path().join("missing.txt");
     let file_link = temp_dir.path().join("file-link.txt");
 
     unix::fs::symlink(&missing_target, &file_link).unwrap();
 
-    let trashed_item = trash.discard(&file_link).unwrap();
+    let trashed_item = discard(&file_link).unwrap();
 
     assert_eq!(trashed_item.original_name(), file_link.file_name().unwrap());
     assert_eq!(
@@ -176,7 +172,6 @@ fn test_discard_broken_symlink() {
 #[test]
 fn test_discard_directory() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let dir = temp_dir.path().join("directory");
     let file = dir.join("file.txt");
 
@@ -188,7 +183,7 @@ fn test_discard_directory() {
     #[cfg(target_os = "windows")]
     let expected_path = to_long_path(&dir).unwrap();
 
-    let trashed_item = trash.discard(&dir).unwrap();
+    let trashed_item = discard(&dir).unwrap();
 
     assert_eq!(trashed_item.original_name(), dir.file_name().unwrap());
     assert_eq!(trashed_item.original_path(), expected_path);
@@ -198,7 +193,6 @@ fn test_discard_directory() {
 #[test]
 fn test_discard_all() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let first = temp_dir.path().join("first.txt");
     let second = temp_dir.path().join("second.txt");
     let third = temp_dir.path().join("third.txt");
@@ -211,7 +205,7 @@ fn test_discard_all() {
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(&fourth, b"fourth").unwrap();
 
-    let trashed_items = trash.discard_all([&first, &second, &dir]).unwrap();
+    let trashed_items = discard_all([&first, &second, &dir]).unwrap();
 
     assert_eq!(trashed_items.len(), 3);
     assert!(!first.exists());
@@ -222,8 +216,7 @@ fn test_discard_all() {
 
 #[test]
 fn test_discard_empty_path() {
-    let trash = Trash::new();
-    let result = trash.discard(Path::new(""));
+    let result = discard(Path::new(""));
 
     assert!(matches!(result, Err(Error::EmptyPath)));
 }
@@ -231,14 +224,13 @@ fn test_discard_empty_path() {
 #[test]
 fn test_discard_all_with_invalid_path_aborts() {
     let temp_dir = TempDir::new().unwrap();
-    let trash = Trash::new();
     let first = temp_dir.path().join("first.txt");
     let second = temp_dir.path().join("second.txt");
 
     std::fs::write(&first, b"first").unwrap();
     std::fs::write(&second, b"second").unwrap();
 
-    let result = trash.discard_all([first.as_path(), Path::new(""), second.as_path()]);
+    let result = discard_all([first.as_path(), Path::new(""), second.as_path()]);
 
     assert!(matches!(result, Err(Error::EmptyPath)));
     assert!(first.exists());
@@ -250,7 +242,7 @@ fn test_discard_all_with_invalid_path_aborts() {
         .last()
         .unwrap()
         .to_path_buf();
-    let result = trash.discard_all([first.as_path(), root.as_path(), second.as_path()]);
+    let result = discard_all([first.as_path(), root.as_path(), second.as_path()]);
 
     assert!(matches!(result, Err(Error::TargetedRoot { .. })));
     assert!(first.exists());
@@ -259,14 +251,13 @@ fn test_discard_all_with_invalid_path_aborts() {
 
 #[test]
 fn test_discard_root_path() {
-    let trash = Trash::new();
     let root = std::env::current_dir()
         .unwrap()
         .ancestors()
         .last()
         .unwrap()
         .to_path_buf();
-    let result = trash.discard(root);
+    let result = discard(root);
 
     assert!(matches!(result, Err(Error::TargetedRoot { .. })));
 }

@@ -144,56 +144,44 @@ impl TrashItem {
     }
 }
 
-/// Provides access to system trash operations.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Trash;
+/// Moves a single path to the system trash.
+///
+/// Symbolic links are moved as links; their targets are left in place.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be resolved or moved to the system trash.
+pub fn discard<P>(path: P) -> Result<TrashItem>
+where
+    P: AsRef<Path>,
+{
+    let target = discard::resolve_target(path.as_ref())?;
 
-impl Trash {
-    /// Creates a trash handle.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
+    platform::discard(&target)
+}
 
-    /// Moves a single path to the system trash.
-    ///
-    /// Symbolic links are moved as links; their targets are left in place.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the path cannot be resolved or moved to the system trash.
-    pub fn discard<P>(&self, path: P) -> Result<TrashItem>
-    where
-        P: AsRef<Path>,
-    {
-        let target = discard::resolve_target(path.as_ref())?;
+/// Moves multiple paths to the system trash.
+///
+/// Returns one [`TrashItem`] per path, in input order.
+///
+/// Symbolic links are moved as links; their targets are left in place.
+///
+/// All paths are resolved before any item is moved to the trash. If resolution
+/// fails, no items are moved. Once trashing begins, paths are processed in input
+/// order. If a later operation fails, earlier items may already be in the trash.
+///
+/// # Errors
+///
+/// Returns an error if any path cannot be resolved or moved to the system trash.
+pub fn discard_all<I, P>(paths: I) -> Result<Vec<TrashItem>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let targets = paths
+        .into_iter()
+        .map(|path| discard::resolve_target(path.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
 
-        platform::discard(&target)
-    }
-
-    /// Moves multiple paths to the system trash.
-    ///
-    /// Returns one [`TrashItem`] per path, in input order.
-    ///
-    /// Symbolic links are moved as links; their targets are left in place.
-    ///
-    /// All paths are resolved before any item is moved to the trash. If resolution
-    /// fails, no items are moved. Once trashing begins, paths are processed in input
-    /// order. If a later operation fails, earlier items may already be in the trash.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any path cannot be resolved or moved to the system trash.
-    pub fn discard_all<I, P>(&self, paths: I) -> Result<Vec<TrashItem>>
-    where
-        I: IntoIterator<Item = P>,
-        P: AsRef<Path>,
-    {
-        let targets = paths
-            .into_iter()
-            .map(|path| discard::resolve_target(path.as_ref()))
-            .collect::<Result<Vec<_>>>()?;
-
-        platform::discard_all(&targets)
-    }
+    platform::discard_all(&targets)
 }
