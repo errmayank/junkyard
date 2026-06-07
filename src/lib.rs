@@ -1,6 +1,6 @@
+mod discard;
 mod error;
 mod platform;
-mod util;
 
 pub use error::{Error, Result};
 
@@ -166,9 +166,9 @@ impl Trash {
     where
         P: AsRef<Path>,
     {
-        let path = util::resolve_path(path.as_ref())?;
+        let target = discard::resolve_target(path.as_ref())?;
 
-        platform::discard(self, &path)
+        platform::discard(self, &target)
     }
 
     /// Moves multiple paths to the system trash.
@@ -189,11 +189,11 @@ impl Trash {
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
     {
-        let paths = paths
+        let targets = paths
             .into_iter()
-            .map(|path| util::resolve_path(path.as_ref()))
+            .map(|path| discard::resolve_target(path.as_ref()))
             .collect::<Result<Vec<_>>>()?;
 
-        platform::discard_all(self, &paths)
+        platform::discard_all(self, &targets)
     }
 }

@@ -2,37 +2,30 @@ mod path;
 mod recycle;
 mod shell;
 
-use std::path::{Path, PathBuf};
-
 use recycle::{RecycleOperation, RecycleProgressSink, RecycledItem};
 use shell::{ShellContext, with_shell_context};
 
-use crate::{Error, Result, Trash, TrashItem};
+use crate::{Result, Trash, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
-    let path = path.to_path_buf();
+pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
+    let target = target.clone();
 
-    with_shell_context(move |shell_context| discard_inner(shell_context, &path))
+    with_shell_context(move |shell_context| discard_inner(shell_context, &target))
 }
 
-pub(crate) fn discard_all(_: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>> {
-    let paths = paths.to_vec();
+pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+    let targets = targets.to_vec();
 
     with_shell_context(move |shell_context| {
-        paths
+        targets
             .iter()
-            .map(|path| discard_inner(shell_context, path))
+            .map(|target| discard_inner(shell_context, target))
             .collect()
     })
 }
 
-fn discard_inner(shell_context: &ShellContext, path: &Path) -> Result<TrashItem> {
-    if path.file_name().is_none() {
-        return Err(Error::TargetedRoot {
-            path: path.to_path_buf(),
-        });
-    }
-
+fn discard_inner(shell_context: &ShellContext, target: &DiscardTarget) -> Result<TrashItem> {
+    let path = &target.path;
     let shell_item = shell_context.item_from_path(path)?;
     let sink = RecycleProgressSink::new();
     let file_operation_sink = sink.to_file_operation_sink();

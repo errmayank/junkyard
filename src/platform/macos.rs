@@ -3,29 +3,29 @@ use std::{
     ffi::{CStr, CString, c_char},
     io,
     os::unix::ffi::{OsStrExt, OsStringExt},
-    path::{Path, PathBuf},
     ptr::NonNull,
     time::SystemTime,
 };
 
-use crate::{Error, Result, Trash, TrashItem};
+use crate::{Error, Result, Trash, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
+pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
     let file_manager = NSFileManager::defaultManager();
 
-    discard_inner(&file_manager, path)
+    discard_inner(&file_manager, target)
 }
 
-pub(crate) fn discard_all(_: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>> {
+pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     let file_manager = NSFileManager::defaultManager();
 
-    paths
+    targets
         .iter()
-        .map(|path| discard_inner(&file_manager, path))
+        .map(|target| discard_inner(&file_manager, target))
         .collect()
 }
 
-fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem> {
+fn discard_inner(file_manager: &NSFileManager, target: &DiscardTarget) -> Result<TrashItem> {
+    let path = &target.path;
     let path_cstring = CString::new(path.as_os_str().as_bytes()).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source: io::Error::new(io::ErrorKind::InvalidInput, source),
@@ -70,18 +70,6 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
             path.display()
         ),
     })?;
-    let original_name = path
-        .file_name()
-        .ok_or_else(|| Error::TargetedRoot {
-            path: path.to_path_buf(),
-        })?
-        .to_os_string();
-    let original_parent = path
-        .parent()
-        .ok_or_else(|| Error::TargetedRoot {
-            path: path.to_path_buf(),
-        })?
-        .to_path_buf();
 
     // SAFETY: `trashed_url` comes from `trashItemAtURL`; its filesystem path is
     // NUL-terminated and copied before `trashed_url` is dropped.
@@ -90,8 +78,8 @@ fn discard_inner(file_manager: &NSFileManager, path: &Path) -> Result<TrashItem>
 
     Ok(TrashItem::new(
         trashed_id,
-        original_name,
-        original_parent,
+        target.original_name.clone(),
+        target.original_parent.clone(),
         SystemTime::now(),
     ))
 }

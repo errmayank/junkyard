@@ -5,30 +5,30 @@ mod payload;
 mod permission;
 mod trash_info;
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{io, time::SystemTime};
 use time::OffsetDateTime;
 
 use directory_size::DirectorySizeCache;
 use location::TrashLocation;
 use payload::PayloadKind;
 
-use crate::{Error, Result, Trash, TrashItem};
+use crate::{Error, Result, Trash, TrashItem, discard::DiscardTarget};
 
-pub(crate) fn discard(_: &Trash, path: &Path) -> Result<TrashItem> {
-    let location = TrashLocation::resolve(path)?;
+pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
+    let location = TrashLocation::resolve(&target.path)?;
 
-    discard_inner(&location, path)
+    discard_inner(&location, target)
 }
 
-pub(crate) fn discard_all(trash: &Trash, paths: &[PathBuf]) -> Result<Vec<TrashItem>> {
-    paths.iter().map(|path| discard(trash, path)).collect()
+pub(crate) fn discard_all(trash: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+    targets
+        .iter()
+        .map(|target| discard(trash, target))
+        .collect()
 }
 
-fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
+fn discard_inner(location: &TrashLocation, target: &DiscardTarget) -> Result<TrashItem> {
+    let path = &target.path;
     permission::ensure_discard_permission(path)?;
 
     let trash_dir = location.prepare()?;
@@ -62,23 +62,10 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
             }
         }
 
-        let original_parent = path
-            .parent()
-            .ok_or_else(|| Error::TargetedRoot {
-                path: path.to_path_buf(),
-            })?
-            .to_path_buf();
-        let original_name = path
-            .file_name()
-            .ok_or_else(|| Error::TargetedRoot {
-                path: path.to_path_buf(),
-            })?
-            .to_os_string();
-
         return Ok(TrashItem::new(
             entry.info.into_os_string(),
-            original_name,
-            original_parent,
+            target.original_name.clone(),
+            target.original_parent.clone(),
             SystemTime::from(discarded_at),
         ));
     }
@@ -88,7 +75,7 @@ fn discard_inner(location: &TrashLocation, path: &Path) -> Result<TrashItem> {
 mod tests {
     use super::*;
 
-    use std::{ffi::OsStr, os::unix::fs::MetadataExt};
+    use std::{ffi::OsStr, os::unix::fs::MetadataExt, path::Path};
     use tempfile::TempDir;
 
     use location::HomeTrashPath;
@@ -109,7 +96,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&file, b"image bytes").unwrap();
 
-        let trashed_item = discard_inner(&location, &dir).unwrap();
+        let target = discard::resolve_target(&dir).unwrap();
+        let trashed_item = discard_inner(&location, &target).unwrap();
         let contents = std::fs::read_to_string(trash.join("directorysizes")).unwrap();
         let mut fields = contents.split_ascii_whitespace();
         let size = fields.next().unwrap().parse::<u64>().unwrap();
@@ -143,7 +131,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(trash.join("directorysizes")).unwrap();
 
-        let trashed_item = discard_inner(&location, &dir).unwrap();
+        let target = discard::resolve_target(&dir).unwrap();
+        let trashed_item = discard_inner(&location, &target).unwrap();
 
         assert_eq!(trashed_item.original_name(), OsStr::new("Camera"));
         assert!(!dir.exists());

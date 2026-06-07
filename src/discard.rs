@@ -1,11 +1,19 @@
 use std::{
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
 use crate::{Error, Result};
 
-pub(crate) fn resolve_path(path: &Path) -> Result<PathBuf> {
+#[derive(Clone, Debug)]
+pub(crate) struct DiscardTarget {
+    pub(crate) path: PathBuf,
+    pub(crate) original_name: OsString,
+    pub(crate) original_parent: PathBuf,
+}
+
+pub(crate) fn resolve_target(path: &Path) -> Result<DiscardTarget> {
     if path.as_os_str().is_empty() {
         return Err(Error::EmptyPath);
     }
@@ -31,7 +39,20 @@ pub(crate) fn resolve_path(path: &Path) -> Result<PathBuf> {
             return Err(Error::TargetedRoot { path });
         }
 
-        return Ok(path);
+        let original_name = path
+            .file_name()
+            .ok_or_else(|| Error::TargetedRoot { path: path.clone() })?
+            .to_os_string();
+        let original_parent = path
+            .parent()
+            .ok_or_else(|| Error::TargetedRoot { path: path.clone() })?
+            .to_path_buf();
+
+        return Ok(DiscardTarget {
+            path,
+            original_name,
+            original_parent,
+        });
     };
 
     let parent = path
@@ -43,5 +64,9 @@ pub(crate) fn resolve_path(path: &Path) -> Result<PathBuf> {
         source,
     })?;
 
-    Ok(parent.join(file_name))
+    Ok(DiscardTarget {
+        path: parent.join(file_name),
+        original_name: file_name.to_os_string(),
+        original_parent: parent,
+    })
 }
