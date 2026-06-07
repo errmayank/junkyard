@@ -44,3 +44,13 @@ Symbolic links are moved as links; their targets are left in place.
 - Linux: Follows the Freedesktop trash specification.
 - macOS: Uses `NSFileManager`.
 - Windows: Uses the Shell Recycle Bin APIs.
+
+#### License
+
+<sup>
+Licensed under either of <a href="LICENSE-APACHE">Apache License, Version 2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
+</sup>
+<br>
+<sup>
+Any contribution intentionally submitted for inclusion in this repository by you shall be dual-licensed as above, without any additional terms or conditions.
+</sup>
