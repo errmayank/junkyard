@@ -27,12 +27,12 @@ pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<Tr
 fn discard_inner(file_manager: &NSFileManager, target: &DiscardTarget) -> Result<TrashItem> {
     let path = &target.path;
     let path_cstring = CString::new(path.as_os_str().as_bytes()).map_err(|source| Error::Io {
-        path: path.to_path_buf(),
+        path: path.clone(),
         source: io::Error::new(io::ErrorKind::InvalidInput, source),
     })?;
     let file_type = std::fs::symlink_metadata(path)
         .map_err(|source| Error::Io {
-            path: path.to_path_buf(),
+            path: path.clone(),
             source,
         })?
         .file_type();

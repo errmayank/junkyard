@@ -82,6 +82,8 @@ mod tests {
     use mount::MountPoint;
     use trash_info::ReservedTrashEntry;
 
+    use crate::discard;
+
     #[test]
     fn test_discard_inner_updates_directory_size_cache() {
         let temp_dir = TempDir::new().unwrap();
