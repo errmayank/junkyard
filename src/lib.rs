@@ -1,14 +1,190 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+mod discard;
+mod error;
+mod platform;
+
+pub use error::{Error, Result};
+
+use std::{
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
+
+/// Describes an item moved to the system trash.
+#[derive(Clone, Debug)]
+pub struct TrashItem {
+    id: OsString,
+    original_name: OsString,
+    original_parent: PathBuf,
+    discarded_at: SystemTime,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+impl TrashItem {
+    #[must_use]
+    pub(crate) fn new(
+        id: OsString,
+        original_name: OsString,
+        original_parent: PathBuf,
+        discarded_at: SystemTime,
+    ) -> Self {
+        Self {
+            id,
+            original_name,
+            original_parent,
+            discarded_at,
+        }
     }
+
+    /// Returns the platform-specific identifier for the trashed item.
+    ///
+    /// On Linux:
+    ///
+    /// - This is the absolute path to the `.trashinfo` file.
+    /// - For example: `/home/me/.local/share/Trash/info/file.txt.trashinfo`.
+    ///
+    /// On macOS:
+    ///
+    /// - This is the filesystem representation of the URL returned by
+    ///   `NSFileManager::trashItemAtURL`.
+    /// - For example: `/Users/me/.Trash/file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - This is the recycled item path returned by the Shell.
+    /// - For example: `C:\$Recycle.Bin\S-1-5-21-...\$RABC123.txt`.
+    #[must_use]
+    pub fn id(&self) -> &OsStr {
+        &self.id
+    }
+
+    /// Returns the trashed item's original file name.
+    ///
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `file.txt`.
+    ///
+    /// On macOS:
+    ///
+    /// - For `/Users/me/Downloads/file.txt`, this returns `file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Downloads\file.txt`, this returns `file.txt`.
+    #[must_use]
+    pub fn original_name(&self) -> &OsStr {
+        &self.original_name
+    }
+
+    /// Returns the directory that originally contained the trashed item.
+    ///
+    /// On Linux and macOS, the parent directory is canonicalized.
+    ///
+    /// On Windows, this is the original location recorded by the Shell.
+    /// Short 8.3 file names may be returned in their long form.
+    ///
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `/home/me/Downloads`.
+    ///
+    /// On macOS:
+    ///
+    /// - For `/Users/me/Downloads/file.txt`, this returns `/Users/me/Downloads`.
+    /// - For `/var/folders/example/file.txt`, this returns `/private/var/folders/example`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Desktop\file.txt`, this returns `C:\Users\me\Desktop`.
+    /// - For `C:\Users\me\DOWNLO~1\file.txt`, this may return `C:\Users\me\Downloads`.
+    #[must_use]
+    pub fn original_parent(&self) -> &Path {
+        &self.original_parent
+    }
+
+    /// Returns the trashed item's original full path.
+    ///
+    /// This is equivalent to joining [`TrashItem::original_parent`] and
+    /// [`TrashItem::original_name`].
+    ///
+    /// On Linux and macOS, the parent directory is canonicalized.
+    ///
+    /// On Windows, this uses the original location recorded by the Shell.
+    /// Short 8.3 file names may be returned in their long form.
+    ///
+    /// On Linux:
+    ///
+    /// - For `/home/me/Downloads/file.txt`, this returns `/home/me/Downloads/file.txt`.
+    ///
+    /// On macOS:
+    ///
+    /// - For `/Users/me/Downloads/file.txt`, this returns `/Users/me/Downloads/file.txt`.
+    /// - For `/var/folders/example/file.txt`, this returns `/private/var/folders/example/file.txt`.
+    ///
+    /// On Windows:
+    ///
+    /// - For `C:\Users\me\Desktop\file.txt`, this returns `C:\Users\me\Desktop\file.txt`.
+    /// - For `C:\Users\me\DOWNLO~1\file.txt`, this may return `C:\Users\me\Downloads\file.txt`.
+    #[must_use]
+    pub fn original_path(&self) -> PathBuf {
+        self.original_parent.join(&self.original_name)
+    }
+
+    /// Returns the time at which the item was trashed.
+    ///
+    /// On Linux:
+    ///
+    /// - This is the timestamp written to the `.trashinfo` file.
+    ///
+    /// On macOS:
+    ///
+    /// - This is recorded after the system trash operation succeeds.
+    ///
+    /// On Windows:
+    ///
+    /// - This is the recycled item's `System.Recycle.DateDeleted` property.
+    #[must_use]
+    pub fn discarded_at(&self) -> SystemTime {
+        self.discarded_at
+    }
+}
+
+/// Moves a single path to the system trash.
+///
+/// Symbolic links are moved as links; their targets are left in place.
+///
+/// # Errors
+///
+/// Returns an error if the path cannot be resolved or moved to the system trash.
+pub fn discard<P>(path: P) -> Result<TrashItem>
+where
+    P: AsRef<Path>,
+{
+    let target = discard::resolve_target(path.as_ref())?;
+
+    platform::discard(&target)
+}
+
+/// Moves multiple paths to the system trash.
+///
+/// Returns one [`TrashItem`] per path, in input order.
+///
+/// Symbolic links are moved as links; their targets are left in place.
+///
+/// All paths are resolved before any item is moved to the trash. If resolution
+/// fails, no items are moved. Once trashing begins, paths are processed in input
+/// order. If a later operation fails, earlier items may already be in the trash.
+///
+/// # Errors
+///
+/// Returns an error if any path cannot be resolved or moved to the system trash.
+pub fn discard_all<I, P>(paths: I) -> Result<Vec<TrashItem>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let targets = paths
+        .into_iter()
+        .map(|path| discard::resolve_target(path.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
+
+    platform::discard_all(&targets)
 }

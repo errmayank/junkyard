@@ -1,0 +1,262 @@
+use std::{
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt, OsStringExt},
+    path::{Path, PathBuf},
+};
+
+use crate::{Error, Result};
+
+const MOUNT_INFO_PATH: &str = "/proc/self/mountinfo";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Mounts(Vec<MountInfo>);
+
+impl Mounts {
+    pub(super) fn read() -> Result<Self> {
+        let contents = std::fs::read(MOUNT_INFO_PATH).map_err(|source| Error::Io {
+            path: PathBuf::from(MOUNT_INFO_PATH),
+            source,
+        })?;
+        let entries = parse_mount_info(&contents).map_err(|source| Error::Platform {
+            message: format!("Failed to parse {MOUNT_INFO_PATH}: {source:?}"),
+        })?;
+
+        if entries.is_empty() {
+            return Err(Error::Platform {
+                message: format!("No mount points found in {MOUNT_INFO_PATH}"),
+            });
+        }
+
+        Ok(Self::new(entries))
+    }
+
+    pub(super) fn new(mut entries: Vec<MountInfo>) -> Self {
+        entries.sort_unstable_by(|left, right| {
+            let left_length = left.mount_point.as_path().as_os_str().as_bytes().len();
+            let right_length = right.mount_point.as_path().as_os_str().as_bytes().len();
+
+            right_length.cmp(&left_length)
+        });
+
+        Self(entries)
+    }
+
+    pub(super) fn find_mount_point(&self, path: &Path) -> Option<MountPoint> {
+        self.0
+            .iter()
+            .find(|info| path.starts_with(info.mount_point.as_path()))
+            .map(|info| info.mount_point.clone())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MountPoint(pub(super) PathBuf);
+
+impl MountPoint {
+    pub(super) fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MountInfo {
+    pub(super) mount_point: MountPoint,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum MountParseError {
+    MissingSeparator,
+    MissingMountPoint,
+    InvalidPathEscape,
+}
+
+fn parse_mount_info(contents: &[u8]) -> std::result::Result<Vec<MountInfo>, MountParseError> {
+    let parse_line = |line: &[u8]| {
+        let mut field_number = 0;
+        let mut mount_point = None;
+        let mut found_separator = false;
+
+        for field in line.split(u8::is_ascii_whitespace) {
+            if field.is_empty() {
+                continue;
+            }
+
+            if field == b"-" {
+                found_separator = true;
+                break;
+            }
+
+            field_number += 1;
+
+            if field_number == 5 {
+                mount_point = Some(field);
+            }
+        }
+
+        if !found_separator {
+            return Err(MountParseError::MissingSeparator);
+        }
+
+        let mount_point = mount_point.ok_or(MountParseError::MissingMountPoint)?;
+        let mount_point =
+            decode_mount_info_path(mount_point).ok_or(MountParseError::InvalidPathEscape)?;
+
+        Ok(MountInfo {
+            mount_point: MountPoint(mount_point),
+        })
+    };
+
+    let mut entries = Vec::new();
+
+    for line in contents.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+
+        entries.push(parse_line(line)?);
+    }
+
+    Ok(entries)
+}
+
+fn decode_mount_info_path(path: &[u8]) -> Option<PathBuf> {
+    let decode_octal_escape = |first: u8, second: u8, third: u8| {
+        let octal_digit = |byte| match byte {
+            b'0'..=b'7' => Some(byte - b'0'),
+            _ => None,
+        };
+
+        let first = u16::from(octal_digit(first)?);
+        let second = u16::from(octal_digit(second)?);
+        let third = u16::from(octal_digit(third)?);
+        let value = (first * 64) + (second * 8) + third;
+
+        u8::try_from(value).ok()
+    };
+
+    let mut bytes = path.iter().copied();
+    let mut decoded = Vec::with_capacity(path.len());
+
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            decoded.push(byte);
+            continue;
+        }
+
+        let first = bytes.next()?;
+        let second = bytes.next()?;
+        let third = bytes.next()?;
+
+        decoded.push(decode_octal_escape(first, second, third)?);
+    }
+
+    Some(PathBuf::from(OsString::from_vec(decoded)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use indoc::indoc;
+    use std::{
+        ffi::OsString,
+        os::unix::ffi::OsStringExt,
+        path::{Path, PathBuf},
+    };
+
+    #[test]
+    fn test_parse_mount_info() {
+        let bytes = indoc! {b"
+            36 35 98:0 / / rw,relatime - ext4 /dev/root rw
+            37 36 8:1 / /home rw,nosuid - ext4 /dev/sda1 rw
+        "};
+        let entries = parse_mount_info(bytes).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![
+                MountInfo {
+                    mount_point: MountPoint(PathBuf::from("/")),
+                },
+                MountInfo {
+                    mount_point: MountPoint(PathBuf::from("/home")),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_mount_info_decodes_path_escapes() {
+        let bytes = b"37 36 8:1 / /media/USB\\040Drive rw - ext4 /dev/sda1 rw";
+        let entries = parse_mount_info(bytes).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![MountInfo {
+                mount_point: MountPoint(PathBuf::from("/media/USB Drive")),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_mount_info_preserves_invalid_utf8() {
+        let bytes = b"37 36 8:1 / /media/camera-\\377card rw - ext4 /dev/sda1 rw";
+        let entries = parse_mount_info(bytes).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![MountInfo {
+                mount_point: MountPoint(PathBuf::from(OsString::from_vec(
+                    b"/media/camera-\xffcard".to_vec()
+                ))),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_mount_info_rejects_invalid_path_escape() {
+        let bytes = b"37 36 8:1 / /media/invalid\\999path rw - ext4 /dev/sda1 rw";
+        let error = parse_mount_info(bytes).unwrap_err();
+
+        assert_eq!(error, MountParseError::InvalidPathEscape);
+    }
+
+    #[test]
+    fn test_find_mount_point_uses_longest_match() {
+        let mounts = Mounts::new(vec![
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/home")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/home/user")),
+            },
+        ]);
+
+        let mount_point = mounts
+            .find_mount_point(Path::new("/home/user/Downloads/file.txt"))
+            .unwrap();
+
+        assert_eq!(mount_point.as_path(), Path::new("/home/user"));
+    }
+
+    #[test]
+    fn test_find_mount_point_does_not_match_partial_component() {
+        let mounts = Mounts::new(vec![
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/")),
+            },
+            MountInfo {
+                mount_point: MountPoint(PathBuf::from("/media/user/External")),
+            },
+        ]);
+
+        let mount_point = mounts
+            .find_mount_point(Path::new("/media/user/ExternalSSD/file.txt"))
+            .unwrap();
+
+        assert_eq!(mount_point.as_path(), Path::new("/"));
+    }
+}
