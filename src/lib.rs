@@ -52,6 +52,7 @@ impl TrashItem {
     ///
     /// - This is the recycled item path returned by the Shell.
     /// - For example: `C:\$Recycle.Bin\S-1-5-21-...\$RABC123.txt`.
+    #[must_use]
     pub fn id(&self) -> &OsStr {
         &self.id
     }
@@ -69,6 +70,7 @@ impl TrashItem {
     /// On Windows:
     ///
     /// - For `C:\Users\me\Downloads\file.txt`, this returns `file.txt`.
+    #[must_use]
     pub fn original_name(&self) -> &OsStr {
         &self.original_name
     }
@@ -93,6 +95,7 @@ impl TrashItem {
     ///
     /// - For `C:\Users\me\Desktop\file.txt`, this returns `C:\Users\me\Desktop`.
     /// - For `C:\Users\me\DOWNLO~1\file.txt`, this may return `C:\Users\me\Downloads`.
+    #[must_use]
     pub fn original_parent(&self) -> &Path {
         &self.original_parent
     }
