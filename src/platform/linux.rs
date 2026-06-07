@@ -20,10 +20,13 @@ pub(crate) fn discard(_: &Trash, target: &DiscardTarget) -> Result<TrashItem> {
     discard_inner(&location, target)
 }
 
-pub(crate) fn discard_all(trash: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
+pub(crate) fn discard_all(_: &Trash, targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     targets
         .iter()
-        .map(|target| discard(trash, target))
+        .map(|target| {
+            let location = TrashLocation::resolve(&target.path)?;
+            discard_inner(&location, target)
+        })
         .collect()
 }
 
