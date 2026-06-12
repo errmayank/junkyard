@@ -6,7 +6,7 @@ Cross-platform system trash API.
 
 ### Discard
 
-Move a single path to the trash:
+Use `discard` to move a single path to the trash:
 
 ```rust
 use junkyard::discard;
@@ -19,7 +19,9 @@ assert_eq!(item.original_name(), "file.txt");
 assert!(!std::fs::exists("file.txt")?);
 ```
 
-Move multiple paths at once:
+### Discard Multiple Paths
+
+Use `discard_all` to move multiple paths to the trash:
 
 ```rust
 use junkyard::discard_all;
