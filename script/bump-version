@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 <patch|minor|major>" >&2
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 1
+fi
+
+level="$1"
+
+case "$level" in
+  patch | minor | major) ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
+
+command -v gh >/dev/null || {
+  echo "error: GitHub CLI is required" >&2
+  exit 1
+}
+
+echo "This will create a release commit and tag for errmayank/junkyard on main."
+read -r -p "Type \"$level\" to continue: " confirmation
+
+if [[ "$confirmation" != "$level" ]]; then
+  echo "Aborted."
+  exit 0
+fi
+
+gh workflow run bump_version.yml --ref main -f level="$level"
+
+echo ""
+echo "Workflow triggered. Monitor progress at:"
+echo "  https://github.com/errmayank/junkyard/actions/workflows/bump_version.yml"
