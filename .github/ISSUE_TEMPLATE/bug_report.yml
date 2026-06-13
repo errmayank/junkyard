@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a problem with Junkyard
+labels: "S-needs-triage"
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include a short summary and minimal reproduction code.
+      placeholder: |
+        [short summary of the bug]
+
+        Minimal reproduction:
+
+        ```rust
+
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-vs-expected
+    attributes:
+      label: Current vs. Expected behavior
+      description: Current behavior vs. what you expected the behavior to be.
+      placeholder: |
+        Current behavior: [explanation]
+
+        Expected behavior: [explanation]
+    validations:
+      required: true
+
+  - type: textarea
+    id: junkyard-version
+    attributes:
+      label: Version
+      description: "List the version of the crate you're using: `cargo tree -p junkyard --depth 0`"
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: rust-toolchain
+    attributes:
+      label: Rust toolchain
+      description: "List your Rust toolchain: `rustc --version --verbose`"
+      render: text
+    validations:
+      required: true
