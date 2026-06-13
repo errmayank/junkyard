@@ -41,6 +41,46 @@ All paths are resolved before any item is moved to the trash. If resolution fail
 
 Symbolic links are moved as links; their targets are left in place.
 
+### Trash Item
+
+`TrashItem` describes an item that has been moved to the system trash.
+
+#### Linux
+
+For `/home/me/Downloads/file.txt`, the returned `TrashItem` may look like:
+
+```text
+id()              /home/me/.local/share/Trash/info/file.txt.trashinfo
+original_name()   file.txt
+original_parent() /home/me/Downloads
+original_path()   /home/me/Downloads/file.txt
+discarded_at()    time recorded with OffsetDateTime::now_local() and written as DeletionDate in the .trashinfo file
+```
+
+#### macOS
+
+For `/Users/me/Downloads/file.txt`, the returned `TrashItem` may look like:
+
+```text
+id()              /Users/me/.Trash/file.txt
+original_name()   file.txt
+original_parent() /Users/me/Downloads
+original_path()   /Users/me/Downloads/file.txt
+discarded_at()    time recorded with SystemTime::now() after NSFileManager succeeds
+```
+
+#### Windows
+
+For `C:\Users\me\Downloads\file.txt`, the returned `TrashItem` may look like:
+
+```text
+id()              C:\$Recycle.Bin\S-1-5-21-...\$RABC123.txt
+original_name()   file.txt
+original_parent() C:\Users\me\Downloads
+original_path()   C:\Users\me\Downloads\file.txt
+discarded_at()    time read from the recycled item's System.Recycle.DateDeleted property
+```
+
 ## Notes
 
 - Linux: Follows the Freedesktop trash specification.

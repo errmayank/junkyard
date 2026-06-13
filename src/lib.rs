@@ -63,7 +63,7 @@ use std::{
     time::SystemTime,
 };
 
-/// Describes an item moved to the system trash.
+/// Describes an item that has been moved to the system trash.
 #[derive(Clone, Debug)]
 pub struct TrashItem {
     id: OsString,
@@ -185,11 +185,12 @@ impl TrashItem {
     ///
     /// On Linux:
     ///
-    /// - This is the timestamp written to the `.trashinfo` file.
+    /// - This is recorded with `OffsetDateTime::now_local` and written as `DeletionDate`
+    ///   in the `.trashinfo` file.
     ///
     /// On macOS:
     ///
-    /// - This is recorded after the system trash operation succeeds.
+    /// - This is recorded with [`SystemTime::now`] after `NSFileManager` succeeds.
     ///
     /// On Windows:
     ///
