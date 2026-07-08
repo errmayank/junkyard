@@ -24,6 +24,14 @@ pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
         .collect()
 }
 
+pub(crate) fn restore(_item: TrashItem) -> Result<()> {
+    unimplemented!()
+}
+
+pub(crate) fn restore_all(_items: Vec<TrashItem>) -> Result<()> {
+    unimplemented!()
+}
+
 fn discard_inner(file_manager: &NSFileManager, target: &DiscardTarget) -> Result<TrashItem> {
     let path = &target.path;
     let path_cstring = CString::new(path.as_os_str().as_bytes()).map_err(|source| Error::Io {

@@ -30,6 +30,14 @@ pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
         .collect()
 }
 
+pub(crate) fn restore(_item: TrashItem) -> Result<()> {
+    unimplemented!()
+}
+
+pub(crate) fn restore_all(_items: Vec<TrashItem>) -> Result<()> {
+    unimplemented!()
+}
+
 fn discard_inner(location: &TrashLocation, target: &DiscardTarget) -> Result<TrashItem> {
     let path = &target.path;
     permission::ensure_discard_permission(path)?;
