@@ -242,3 +242,16 @@ where
 
     platform::discard_all(&targets)
 }
+
+pub fn restore(item: TrashItem) -> Result<()> {
+    platform::restore(item)
+}
+
+pub fn restore_all<I>(items: I) -> Result<()>
+where
+    I: IntoIterator<Item = TrashItem>,
+{
+    let items = items.into_iter().collect::<Vec<_>>();
+
+    platform::restore_all(items)
+}

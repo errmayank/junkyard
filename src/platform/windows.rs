@@ -24,6 +24,14 @@ pub(crate) fn discard_all(targets: &[DiscardTarget]) -> Result<Vec<TrashItem>> {
     })
 }
 
+pub(crate) fn restore(_item: TrashItem) -> Result<()> {
+    unimplemented!()
+}
+
+pub(crate) fn restore_all(_items: Vec<TrashItem>) -> Result<()> {
+    unimplemented!()
+}
+
 fn discard_inner(shell_context: &ShellContext, target: &DiscardTarget) -> Result<TrashItem> {
     let path = &target.path;
     let shell_item = shell_context.item_from_path(path)?;

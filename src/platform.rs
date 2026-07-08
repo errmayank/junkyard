@@ -6,8 +6,8 @@ mod macos;
 mod windows;
 
 #[cfg(target_os = "linux")]
-pub(crate) use linux::{discard, discard_all};
+pub(crate) use linux::{discard, discard_all, restore, restore_all};
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{discard, discard_all};
+pub(crate) use macos::{discard, discard_all, restore, restore_all};
 #[cfg(target_os = "windows")]
-pub(crate) use windows::{discard, discard_all};
+pub(crate) use windows::{discard, discard_all, restore, restore_all};
